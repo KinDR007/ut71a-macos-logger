@@ -11,10 +11,11 @@ Built for watching the current consumption of embedded devices in the µA/mA ran
 ## Features
 
 - Live plot of the measured value with dark, Otii-like UI (PyQt6 + pyqtgraph)
-- Statistics for the whole recording and for a selected time region: duration, samples,
+- Statistics for the whole recording and for any number of named selections: duration, samples,
   sample rate, min, max, time-weighted average, **charge (µAh/mAh)** and **energy (Wh)**
+- Two time axes: time since start and wall-clock time
 - Live sample rate (Sa/s)
-- Auto-log of every sample to CSV, save / open recordings
+- Auto-log of every sample to CSV; projects (samples + selections) can be saved and reopened
 - Automatic reconnect when the cable drops
 - Works with every meter function (V, A, Ω, F, Hz, °C/°F, …); charge is computed for current only
 - Command-line reader `ut71a.py` for scripting
@@ -76,14 +77,21 @@ Changing the function or an automatic power-off turns SEND off; enable it again.
 | Key | Action |
 |---|---|
 | Space | Start / Stop |
-| Ctrl+S / Ctrl+O | Save / Open |
+| Ctrl+S / Ctrl+Shift+S | Save / Save as |
+| Ctrl+O | Open |
 | Ctrl+K | Clear |
 | F | Follow the latest data |
 | A | Fit the whole recording |
-| S | Selection region |
+| S | Add a selection |
+| Delete / Backspace | Remove the active selection |
 
 Mouse: wheel zooms, drag pans (turns Follow off), right-drag zooms one axis.
-Hover over the plot to read the time and value of a sample.
+Hover over the plot to read the time, clock time and value of a sample.
+
+**Selections:** press S (or **+ Selection**) to add a region in the middle of the view. Drag the
+edges (◆ handle, the cursor changes to ↔) to resize, drag the inside to move. The Selections
+table lists all regions; click a row to show its full statistics, double-click the name to
+rename it, double-click another column (or **Zoom**) to zoom to it.
 
 With **Auto-log to CSV** enabled, each sample is written to `logs/ut71a_YYYYMMDD_HHMMSS.csv` as it arrives.
 Enter the supply voltage in the side panel to get energy from the measured charge.
@@ -97,6 +105,13 @@ Enter the supply voltage in the side panel to get energy from the measured charg
 .venv/bin/python ut71a.py --raw           # also print raw packets
 ```
 
+### Files
+
+- **Project** (`*.ut71proj`, ZIP with JSON metadata and numpy arrays): samples, selections and
+  supply voltage. Save / Save as writes a project by default; Open restores everything.
+  Older JSON projects open as well.
+- **CSV** (`*.csv`): samples only. Choose "CSV samples only" in the Save dialog.
+
 ### CSV format
 
 ```
@@ -106,6 +121,18 @@ time_s,timestamp,value,unit,function,ac,dc,auto
 
 `value` is in base SI units (A, V, Ohm, F, Hz); overload is stored as `inf`.
 CSV files from `ut71a.py --csv` can be opened in the GUI as well.
+
+## Performance
+
+The plot stays responsive with long recordings (tested up to 10⁷ samples, about 13 days at 9 Sa/s):
+
+- Statistics of the recording and of every selection come from prefix sums and a min/max
+  pyramid, so they cost O(log N) per update.
+- Only the visible part is drawn. When zoomed out, each block contributes its minimum and maximum,
+  so single-sample peaks stay visible while at most ~8 points per pixel are drawn.
+- Redraw, pan, hover and selection dragging take ~15–30 ms independent of the recording length.
+
+Memory: about 40 bytes per sample (up to ~2× while recording live), i.e. ~0.4–0.8 GB per 10⁷ samples.
 
 ## Sample rate
 
@@ -183,6 +210,7 @@ The decimal exponent per function and range follows libsigrok
 | `run.sh` | Prepares `.venv` and starts the GUI |
 | `UT71A Logger.command` | Finder launcher (double-click) |
 | `ut71a_gui.py` | GUI application |
+| `ut71a_data.py` | Recording storage, statistics, plot decimation, project files |
 | `ut71a.py` | CH9325 driver, packet decoder, CLI |
 | `requirements.txt` | Pinned Python dependencies |
 

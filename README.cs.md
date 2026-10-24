@@ -11,10 +11,11 @@ Určeno hlavně ke sledování spotřeby embedded zařízení v rozsazích µA/m
 ## Funkce
 
 - Živý graf měřené hodnoty v tmavém vzhledu ve stylu Otii (PyQt6 + pyqtgraph)
-- Statistiky celého záznamu i vybraného časového úseku: doba, počet vzorků, vzorkovací
+- Statistiky celého záznamu i libovolného počtu pojmenovaných výběrů: doba, počet vzorků, vzorkovací
   rychlost, min, max, časově vážený průměr, **náboj (µAh/mAh)** a **energie (Wh)**
+- Dvě časové osy: čas od začátku měření a systémový čas
 - Živá rychlost příjmu (Sa/s)
-- Automatický zápis každého vzorku do CSV, uložení a načtení záznamu
+- Automatický zápis každého vzorku do CSV; projekty (vzorky + výběry) lze uložit a znovu otevřít
 - Automatické znovupřipojení při výpadku kabelu
 - Funguje se všemi funkcemi multimetru (V, A, Ω, F, Hz, °C/°F, …); náboj se počítá jen pro proud
 - Řádkový nástroj `ut71a.py` pro skripty
@@ -76,14 +77,21 @@ Změna funkce nebo automatické vypnutí SEND vypne; je potřeba ho znovu zapnou
 | Klávesa | Akce |
 |---|---|
 | Mezerník | Start / Stop |
-| Ctrl+S / Ctrl+O | Uložit / Otevřít |
+| Ctrl+S / Ctrl+Shift+S | Uložit / Uložit jako |
+| Ctrl+O | Otevřít |
 | Ctrl+K | Vymazat |
 | F | Sledovat nejnovější data |
 | A | Zobrazit celý záznam |
-| S | Výběr úseku |
+| S | Přidat výběr |
+| Delete / Backspace | Odebrat aktivní výběr |
 
 Myš: kolečko zoomuje, tažení posouvá (vypne sledování), tažení pravým tlačítkem zoomuje jednu osu.
-Po najetí na graf se zobrazí čas a hodnota vzorku.
+Po najetí na graf se zobrazí čas od začátku, systémový čas a hodnota vzorku.
+
+**Výběry:** klávesa S (nebo **+ Selection**) přidá úsek doprostřed zobrazení. Tažením okraje
+(úchyt ◆, kurzor se změní na ↔) se mění šířka, tažením vnitřku se úsek posouvá. Tabulka
+Selections ukazuje všechny úseky; kliknutím na řádek se zobrazí jeho kompletní statistiky,
+dvojklikem na název ho přejmenuješ, dvojklikem na jiný sloupec (nebo **Zoom**) se na něj přiblížíš.
 
 Se zapnutým **Auto-log to CSV** se každý vzorek ihned zapisuje do `logs/ut71a_YYYYMMDD_HHMMSS.csv`.
 Zadáním napájecího napětí v postranním panelu se z naměřeného náboje dopočítá energie.
@@ -97,6 +105,13 @@ Zadáním napájecího napětí v postranním panelu se z naměřeného náboje 
 .venv/bin/python ut71a.py --raw           # vypisuje i surové pakety
 ```
 
+### Soubory
+
+- **Projekt** (`*.ut71proj`, ZIP s metadaty v JSON a numpy poli): vzorky, výběry a napájecí
+  napětí. Uložit / Uložit jako standardně ukládá projekt; Otevřít obnoví vše.
+  Starší projekty ve formátu JSON jdou otevřít také.
+- **CSV** (`*.csv`): jen vzorky. V dialogu ukládání zvol „CSV samples only“.
+
 ### Formát CSV
 
 ```
@@ -106,6 +121,18 @@ time_s,timestamp,value,unit,function,ac,dc,auto
 
 `value` je v základních jednotkách SI (A, V, Ohm, F, Hz); přetečení se ukládá jako `inf`.
 V GUI lze otevřít i CSV z `ut71a.py --csv`.
+
+## Výkon
+
+Graf zůstává svižný i u dlouhých záznamů (testováno do 10⁷ vzorků, tj. asi 13 dní při 9 Sa/s):
+
+- Statistiky záznamu i všech výběrů se počítají z kumulativních součtů a pyramidy min/max,
+  takže každá aktualizace stojí O(log N).
+- Vykresluje se jen viditelná část. Při oddálení přispívá každý blok svým minimem a maximem,
+  takže špičky i z jediného vzorku zůstanou vidět a kreslí se nejvýš ~8 bodů na pixel.
+- Překreslení, posun, najetí myší i tažení výběru trvá ~15–30 ms bez ohledu na délku záznamu.
+
+Paměť: asi 40 bajtů na vzorek (při živém měření až ~2×), tj. ~0,4–0,8 GB na 10⁷ vzorků.
 
 ## Vzorkovací rychlost
 
@@ -184,6 +211,7 @@ Dekadický exponent pro funkci a rozsah odpovídá libsigrok
 | `run.sh` | Připraví `.venv` a spustí GUI |
 | `UT71A Logger.command` | Spouštěč pro Finder (dvojklik) |
 | `ut71a_gui.py` | GUI aplikace |
+| `ut71a_data.py` | Ukládání záznamu, statistiky, decimace grafu, projektové soubory |
 | `ut71a.py` | Ovladač CH9325, dekodér paketů, CLI |
 | `requirements.txt` | Python závislosti v pevných verzích |
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """UT71A Logger: live plot, statistics and CSV logging for UNI-T UT71x multimeters."""
-import bisect
 import csv
 import math
 import sys
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -13,6 +13,7 @@ import pyqtgraph as pg
 from PyQt6.QtCore import QSettings, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QKeySequence, QPalette
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -22,26 +23,35 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
+    QScrollArea,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
 import ut71a
+from ut71a_data import CSV_FIELDS, Recording, Series, load_project, save_project
 
 APP_NAME = "UT71A Logger"
 LOG_DIR = Path(__file__).resolve().parent / "logs"
-CSV_FIELDS = ["time_s", "timestamp", "value", "unit", "function", "ac", "dc", "auto"]
+PROJECT_EXT = ".ut71proj"
 
 UNIT_SYMBOL = {"Ohm": "Ω"}
 NO_SI_PREFIX = {"°C", "°F", "%"}
 QUANTITY = {"A": "Current", "V": "Voltage", "Ohm": "Resistance", "F": "Capacitance",
             "Hz": "Frequency", "°C": "Temperature", "°F": "Temperature", "W": "Power", "%": "Percent"}
 RATE_WINDOW = 10  # seconds, for the live sample rate
+SYMBOLS_MAX_VISIBLE = 400  # draw sample dots only when zoomed in this far
+POINTS_PER_PIXEL = 8  # upper bound; LOD levels step by 16x, so 0.5-8 points per pixel
+REFRESH_MS = 33
 SPANS = [("All", 0), ("10 s", 10), ("1 min", 60), ("5 min", 300), ("15 min", 900), ("1 h", 3600)]
 
 BG = "#15171c"
@@ -52,13 +62,14 @@ MUTED = "#8a909c"
 ACCENT = "#ff8c42"
 GREEN = "#3ecf8e"
 RED = "#ef5b5b"
+SEL_COLORS = ["#4ea8de", "#c77dff", "#3ecf8e", "#ffd166", "#ef5b5b", "#80ffdb"]
 
 STYLE = f"""
 QMainWindow, QWidget {{ background: {BG}; color: {TEXT}; font-size: 13px; }}
 QLabel, QCheckBox {{ background: transparent; }}
 QToolBar {{ background: {PANEL}; border: none; border-bottom: 1px solid {BORDER}; spacing: 6px; padding: 6px; }}
-QToolBar QToolButton {{ background: #262a33; border: 1px solid {BORDER}; border-radius: 6px; padding: 6px 12px; }}
-QToolBar QToolButton:hover {{ background: #303540; }}
+QToolBar QToolButton, QPushButton {{ background: #262a33; border: 1px solid {BORDER}; border-radius: 6px; padding: 6px 12px; }}
+QToolBar QToolButton:hover, QPushButton:hover {{ background: #303540; }}
 QToolBar QToolButton:checked {{ background: #3a3f4b; border-color: {ACCENT}; }}
 QToolButton#start {{ background: #1f3b2e; border-color: {GREEN}; color: {GREEN}; font-weight: bold; }}
 QToolButton#stop {{ background: #3d2222; border-color: {RED}; color: {RED}; font-weight: bold; }}
@@ -69,6 +80,13 @@ QLabel#value {{ color: {ACCENT}; font-size: 34px; font-weight: 600; }}
 QLabel#mode {{ color: {MUTED}; }}
 QLabel[class="key"] {{ color: {MUTED}; }}
 QComboBox, QDoubleSpinBox {{ background: #262a33; border: 1px solid {BORDER}; border-radius: 5px; padding: 3px 6px; }}
+QTableWidget {{ background: {PANEL}; border: none; gridline-color: {BORDER};
+    selection-background-color: #3a3f4b; selection-color: {TEXT}; }}
+QHeaderView::section {{ background: {PANEL}; color: {MUTED}; border: none; border-bottom: 1px solid {BORDER}; padding: 3px; }}
+QScrollArea {{ border: none; }}
+QScrollBar:vertical {{ background: {BG}; width: 8px; margin: 0; }}
+QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 4px; min-height: 30px; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 QStatusBar {{ background: {PANEL}; border-top: 1px solid {BORDER}; color: {MUTED}; }}
 QSplitter::handle {{ background: {BORDER}; }}
 """
@@ -100,83 +118,9 @@ def fmt_rate(rate):
     return "–" if rate is None else f"{rate:.2f} Sa/s"
 
 
-def compute_stats(t, y, unit):
-    ok = np.isfinite(y)
-    t, y = t[ok], y[ok]
-    if not len(y):
-        return None
-    dur = float(t[-1] - t[0])
-    if len(y) > 1 and dur > 0:
-        area = float(np.trapezoid(y, t))
-        avg = area / dur
-    else:
-        area, avg = 0.0, float(y.mean())
-    return {
-        "n": len(y),
-        "dur": dur,
-        "rate": (len(y) - 1) / dur if dur > 0 else None,
-        "min": float(y.min()),
-        "max": float(y.max()),
-        "avg": avg,
-        "charge": area / 3600 if unit == "A" else None,  # Ah
-    }
+def fmt_clock(epoch):
+    return datetime.fromtimestamp(epoch).strftime("%H:%M:%S.%f")[:-5]
 
-
-class Recording:
-    def __init__(self):
-        self.clear()
-
-    def clear(self):
-        self.t0 = None
-        self.t, self.epoch, self.v = [], [], []
-        self.unit, self.func, self.ac, self.dc, self.auto = [], [], [], [], []
-
-    def __len__(self):
-        return len(self.t)
-
-    def append(self, epoch, value, unit, func, ac, dc, auto, t=None):
-        if self.t0 is None:
-            self.t0 = epoch if t is None else epoch - t
-        self.t.append(epoch - self.t0 if t is None else t)
-        self.epoch.append(epoch)
-        self.v.append(value)
-        self.unit.append(unit)
-        self.func.append(func)
-        self.ac.append(ac)
-        self.dc.append(dc)
-        self.auto.append(auto)
-        return len(self.t) - 1
-
-    def row(self, i):
-        ts = datetime.fromtimestamp(self.epoch[i]).isoformat(timespec="milliseconds")
-        return [f"{self.t[i]:.3f}", ts, repr(self.v[i]), self.unit[i], self.func[i],
-                int(self.ac[i]), int(self.dc[i]), int(self.auto[i])]
-
-    def save(self, path):
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(CSV_FIELDS)
-            for i in range(len(self)):
-                w.writerow(self.row(i))
-
-    def load(self, path):
-        """Load CSV written by this app or by `ut71a.py --csv`."""
-        self.clear()
-        with open(path, newline="", encoding="utf-8") as f:
-            for r in csv.DictReader(f):
-                if r.get("timestamp"):
-                    epoch = datetime.fromisoformat(r["timestamp"]).timestamp()
-                else:
-                    epoch = datetime.strptime(r["time"], "%Y-%m-%d %H:%M:%S").timestamp()
-                t = float(r["time_s"]) if r.get("time_s") else None
-                self.append(epoch, float(r["value"]), r["unit"], r["function"],
-                            parse_bool(r["ac"]), parse_bool(r["dc"]), parse_bool(r["auto"]), t)
-        if not len(self):
-            raise ValueError("file contains no samples")
-
-
-def parse_bool(s):
-    return s.strip().lower() in ("1", "true", "yes")
 
 
 class Reader(QThread):
@@ -224,6 +168,59 @@ class TimeAxis(pg.AxisItem):
         return [fmt_duration(v, spacing < 1) for v in values]
 
 
+class ClockAxis(pg.DateAxisItem):
+    """Wall-clock axis for data plotted against time relative to `origin()` (epoch)."""
+
+    def __init__(self, origin):
+        super().__init__(orientation="top")
+        self.origin = origin
+
+    def tickValues(self, minVal, maxVal, size):
+        t0 = self.origin()
+        if t0 is None:
+            return []
+        return [(spacing, [v - t0 for v in values])
+                for spacing, values in super().tickValues(minVal + t0, maxVal + t0, size)]
+
+    def tickStrings(self, values, scale, spacing):
+        t0 = self.origin() or 0
+        return super().tickStrings([v + t0 for v in values], scale, spacing)
+
+
+class Selection:
+    def __init__(self, name, lo, hi, color):
+        self.name = name
+        self.color = color
+        c = QColor(color)
+        self.brush = pg.mkBrush(c.red(), c.green(), c.blue(), 30)
+        self.active_brush = pg.mkBrush(c.red(), c.green(), c.blue(), 65)
+        self.region = pg.LinearRegionItem(
+            (lo, hi), brush=self.brush, hoverBrush=pg.mkBrush(c.red(), c.green(), c.blue(), 50),
+            pen=pg.mkPen(color, width=1.5), hoverPen=pg.mkPen(color, width=3))
+        self.region.setZValue(10)
+        self.region.setCursor(Qt.CursorShape.OpenHandCursor)
+        for line in self.region.lines:
+            line.setCursor(Qt.CursorShape.SizeHorCursor)
+            line.addMarker("<|>", position=0.5, size=12)  # visible handle, also widens the grab area
+        self.label = pg.InfLineLabel(self.region.lines[0], text=name, position=0.96, anchors=[(0, 0), (0, 0)],
+                                     color=color)
+
+    def bounds(self):
+        return self.region.getRegion()
+
+    def set_active(self, on):
+        self.region.setBrush(self.active_brush if on else self.brush)
+        self.region.update()
+
+    def rename(self, name):
+        self.name = name
+        self.label.setFormat(name)
+
+    def to_dict(self):
+        lo, hi = self.bounds()
+        return {"name": self.name, "start": lo, "end": hi, "color": self.color}
+
+
 class StatsBox(QGroupBox):
     ROWS = [("dur", "Duration"), ("n", "Samples"), ("rate", "Rate"), ("min", "Min"), ("max", "Max"),
             ("avg", "Average"), ("charge", "Charge"), ("energy", "Energy")]
@@ -269,19 +266,26 @@ class MainWindow(QMainWindow):
         self.rec = Recording()
         self.reader = None
         self.log_file = self.log_writer = self.log_path = None
-        self.source_file = None
+        self.file_path = None  # project or CSV the data was loaded from / saved to
+        self.from_file = False  # data was loaded, Start begins a new recording
         self.unsaved = False
-        self.dirty = False
+        self.series = Series()
+        self.data_dirty = False  # new samples to process
+        self.view_dirty = False  # plot needs re-rendering
+        self.auto_y = True
         self.receiving = False
-        self._t = np.empty(0)
-        self._y = np.empty(0)
+        self.selections = []
+        self.active = None
+        self.sel_counter = 0
         self._unit = ""
+        self._t0 = None
+        self._symbols = True
 
         self._build_ui()
         self._restore_settings()
         self._update_title()
 
-        self.timer = QTimer(self, interval=100, timeout=self.refresh)
+        self.timer = QTimer(self, interval=REFRESH_MS, timeout=self.refresh)
         self.timer.start()
 
     # UI construction
@@ -294,14 +298,18 @@ class MainWindow(QMainWindow):
         self.act_run = QAction("▶  Start", self, shortcut=QKeySequence("Space"), triggered=self.toggle_capture)
         self.act_clear = QAction("Clear", self, shortcut=QKeySequence("Ctrl+K"), triggered=self.clear)
         self.act_open = QAction("Open…", self, shortcut=QKeySequence.StandardKey.Open, triggered=self.open_file)
-        self.act_save = QAction("Save as…", self, shortcut=QKeySequence.StandardKey.Save, triggered=self.save_file)
+        self.act_save = QAction("Save", self, shortcut=QKeySequence.StandardKey.Save, triggered=self.save)
+        self.act_save_as = QAction("Save as…", self, shortcut=QKeySequence("Ctrl+Shift+S"), triggered=self.save_as)
         self.act_follow = QAction("Follow", self, checkable=True, shortcut=QKeySequence("F"), triggered=self.on_follow)
         self.act_follow.setChecked(True)
         self.act_fit = QAction("Fit", self, shortcut=QKeySequence("A"), triggered=self.fit_view)
-        self.act_sel = QAction("Selection", self, checkable=True, shortcut=QKeySequence("S"),
-                               toggled=self.on_selection)
-        for a in (self.act_run, None, self.act_open, self.act_save, self.act_clear, None,
-                  self.act_follow, self.act_fit, self.act_sel):
+        self.act_add_sel = QAction("+ Selection", self, shortcut=QKeySequence("S"),
+                                   triggered=lambda: self.add_selection())
+        self.act_del_sel = QAction("Remove selection", self, triggered=self.remove_selection)
+        self.act_del_sel.setShortcuts([QKeySequence("Delete"), QKeySequence("Backspace")])
+        self.addAction(self.act_del_sel)
+        for a in (self.act_run, None, self.act_open, self.act_save, self.act_save_as, self.act_clear, None,
+                  self.act_follow, self.act_fit, self.act_add_sel):
             tb.addSeparator() if a is None else tb.addAction(a)
         tb.widgetForAction(self.act_run).setObjectName("start")
 
@@ -319,16 +327,25 @@ class MainWindow(QMainWindow):
 
         # plot
         pg.setConfigOptions(antialias=True, background=BG, foreground=MUTED)
-        self.plot = pg.PlotWidget(axisItems={"bottom": TimeAxis("bottom")})
+        self.clock_axis = ClockAxis(lambda: self.rec.t0)
+        self.plot = pg.PlotWidget(axisItems={"bottom": TimeAxis("bottom"), "top": self.clock_axis})
+        self.plot.showAxis("top")
         self.plot.showGrid(x=True, y=True, alpha=0.15)
         self.plot.setLabel("bottom", "Time")
+        self.plot.setLabel("top", "Clock")
         self.plot.setMouseEnabled(x=True, y=True)
         self.vb = self.plot.getViewBox()
-        self.vb.setAutoVisible(y=True)
-        self.vb.sigRangeChangedManually.connect(lambda *_: self.act_follow.setChecked(False))
-        self.curve = self.plot.plot(pen=pg.mkPen(ACCENT, width=1.6), symbol="o", symbolSize=4,
-                                    symbolPen=None, symbolBrush=ACCENT, connect="finite")
-        self.curve.setBrush(pg.mkBrush(255, 140, 66, 40))
+        # Ranges are managed here: pyqtgraph auto-range would scan all data on every change.
+        self.vb.disableAutoRange()
+        self.vb.sigRangeChangedManually.connect(self.on_manual_range)
+        self.vb.sigXRangeChanged.connect(self.invalidate_view)
+        self.vb.sigResized.connect(self.invalidate_view)
+        # 1 px pen: wider antialiased lines are ~50x slower to draw in Qt.
+        self.curve = self.plot.plot(pen=pg.mkPen(ACCENT, width=1), symbol="o", symbolSize=3,
+                                    symbolPen=None, symbolBrush=pg.mkBrush(255, 140, 66, 170))
+        # Cache the drawn curve so hover line/label updates do not redraw the data.
+        for item in (self.curve.curve, self.curve.scatter):
+            item.setCacheMode(item.CacheMode.DeviceCoordinateCache)
 
         self.vline = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#ffffff55", width=1))
         self.hover = pg.TextItem(color=TEXT, anchor=(0, 1), fill=pg.mkBrush(29, 32, 39, 220))
@@ -338,15 +355,8 @@ class MainWindow(QMainWindow):
             self.plot.addItem(item, ignoreBounds=True)
         self.mouse_proxy = pg.SignalProxy(self.plot.scene().sigMouseMoved, rateLimit=30, slot=self.on_mouse)
 
-        self.region = pg.LinearRegionItem(brush=pg.mkBrush(255, 255, 255, 22),
-                                          pen=pg.mkPen("#ffffff88", width=1))
-        self.region.setZValue(10)
-        self.region.sigRegionChanged.connect(self.update_selection)
-
         # side panel
         side = QWidget()
-        side.setMinimumWidth(270)
-        side.setMaximumWidth(360)
         lay = QVBoxLayout(side)
         lay.setContentsMargins(8, 8, 8, 8)
 
@@ -365,9 +375,37 @@ class MainWindow(QMainWindow):
         lay.addWidget(readout)
 
         self.box_all = StatsBox("Recording")
-        self.box_sel = StatsBox("Selection")
-        self.box_sel.setVisible(False)
         lay.addWidget(self.box_all)
+
+        sel_box = QGroupBox("Selections")
+        sl = QVBoxLayout(sel_box)
+        self.sel_table = QTableWidget(0, 4)
+        self.sel_table.setHorizontalHeaderLabels(["Name", "Duration", "Average", "Charge"])
+        hh = self.sel_table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in (1, 2, 3):
+            hh.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        self.sel_table.verticalHeader().hide()
+        self.sel_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.sel_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.sel_table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
+                                       | QAbstractItemView.EditTrigger.EditKeyPressed)
+        self.sel_table.setMinimumHeight(110)
+        self.sel_table.setToolTip("Double-click a name to rename, another column to zoom to the selection")
+        self.sel_table.itemChanged.connect(self.on_sel_renamed)
+        self.sel_table.currentCellChanged.connect(lambda row, *_: self.set_active(row))
+        self.sel_table.cellDoubleClicked.connect(self.on_sel_double_click)
+        sl.addWidget(self.sel_table)
+        btns = QHBoxLayout()
+        for text, action in (("+ Add", lambda: self.add_selection()), ("Remove", self.remove_selection),
+                             ("Zoom", self.zoom_selection)):
+            b = QPushButton(text)
+            b.clicked.connect(lambda _, a=action: a())
+            btns.addWidget(b)
+        sl.addLayout(btns)
+        lay.addWidget(sel_box)
+
+        self.box_sel = StatsBox("Selection")
         lay.addWidget(self.box_sel)
 
         sup = QHBoxLayout()
@@ -380,9 +418,15 @@ class MainWindow(QMainWindow):
         lay.addLayout(sup)
         lay.addStretch(1)
 
+        scroll = QScrollArea(widgetResizable=True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(side)
+        scroll.setMinimumWidth(320)
+        scroll.setMaximumWidth(440)
+
         split = QSplitter()
         split.addWidget(self.plot)
-        split.addWidget(side)
+        split.addWidget(scroll)
         split.setStretchFactor(0, 1)
         split.setCollapsible(0, False)
         self.setCentralWidget(split)
@@ -401,14 +445,19 @@ class MainWindow(QMainWindow):
         if geo := s.value("geometry"):
             self.restoreGeometry(geo)
         else:
-            self.resize(1280, 720)
+            self.resize(1280, 760)
         self.chk_log.setChecked(s.value("autolog", True, type=bool))
         self.supply.setValue(s.value("supply", 3.3, type=float))
         self.span.setCurrentIndex(s.value("span", 0, type=int))
 
     def _update_title(self):
-        name = Path(self.source_file).name if self.source_file else "live"
+        name = Path(self.file_path).name if self.file_path else "live"
         self.setWindowTitle(f"{APP_NAME} – {name}{' *' if self.unsaved else ''}")
+
+    def mark_unsaved(self):
+        if len(self.rec) and not self.unsaved:
+            self.unsaved = True
+            self._update_title()
 
     # capture
 
@@ -419,7 +468,7 @@ class MainWindow(QMainWindow):
             self.start_capture()
 
     def start_capture(self):
-        if self.source_file:
+        if self.from_file:
             if not self.confirm_discard():
                 return
             self.reset_recording()
@@ -475,16 +524,14 @@ class MainWindow(QMainWindow):
         self.lbl_log.setText(f"Log: {self.log_path.name}" if self.log_path else "")
 
     def on_sample(self, epoch, m):
-        value = m["value"]
-        i = self.rec.append(epoch, value, m["unit"], m["function"], m["ac"], m["dc"], m["auto"])
+        i = self.rec.append(epoch, m["value"], m["unit"], m["function"], m["ac"], m["dc"], m["auto"])
         if self.log_writer:
             self.log_writer.writerow(self.rec.row(i))
             self.log_file.flush()
-        else:
-            self.unsaved = True
-            self._update_title()
+        if not self.log_writer or self.file_path:
+            self.mark_unsaved()
         self.show_readout(i)
-        self.dirty = True
+        self.data_dirty = True
         if not self.receiving:
             self.receiving = True
             self.lbl_status.setText("Receiving data")
@@ -497,10 +544,10 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText(msg)
 
     def show_readout(self, i):
-        r = self.rec
-        self.lbl_value.setText(fmt_value(r.v[i], r.unit[i], 5))
-        flags = [f for f, on in (("AC", r.ac[i]), ("DC", r.dc[i]), ("AUTO", r.auto[i])) if on]
-        self.lbl_mode.setText(" · ".join([r.func[i], *flags]))
+        _, _, v, unit, func, ac, dc, auto = self.rec.sample(i)
+        self.lbl_value.setText(fmt_value(v, unit, 5))
+        flags = [f for f, on in (("AC", ac), ("DC", dc), ("AUTO", auto)) if on]
+        self.lbl_mode.setText(" · ".join([func, *flags]))
 
     # plot and statistics
 
@@ -510,96 +557,247 @@ class MainWindow(QMainWindow):
             return
         now = time.time()
         window = min(RATE_WINDOW, now - self.capture_start)
-        if window < 2:
+        if window < 2 or self.rec.t0 is None:
             self.lbl_rate.setText("– Sa/s")
             return
-        recent = self.rec.epoch[bisect.bisect_left(self.rec.epoch, now - window):]
-        self.lbl_rate.setText(f"{len(recent) / window:.2f} Sa/s")
+        t = self.rec.t
+        recent = len(t) - np.searchsorted(t, now - window - self.rec.t0)
+        self.lbl_rate.setText(f"{recent / window:.2f} Sa/s")
 
     def refresh(self):
         self.update_rate()
-        if not self.dirty:
-            return
-        self.dirty = False
+        if self.data_dirty:
+            self.data_dirty = False
+            self.process_new_data()
+        if self.view_dirty:
+            self.view_dirty = False
+            self.render()
+
+    def process_new_data(self):
         r = self.rec
+        if r.t0 != self._t0:
+            self._t0 = r.t0
+            self.clock_axis.picture = None
+            self.clock_axis.update()
         if not len(r):
-            self.curve.setData([], [])
+            self.series.reset(None)
             self.update_stats()
+            self.view_dirty = True
             return
-        unit = r.unit[-1]
-        t = np.asarray(r.t, dtype=float)
-        v = np.asarray(r.v, dtype=float)
-        mask = (np.asarray(r.unit) == unit) & np.isfinite(v)
-        y = np.where(mask, v, np.nan)
-        self._t, self._y = t, y
-
-        if unit != self._unit:
-            self._unit = unit
+        unit_code = int(r.unit_codes[-1])
+        if unit_code != self.series.code:
+            # meter function changed: rebuild for the new unit (O(N), rare)
+            self.series.reset(unit_code)
+            self._unit = r.unit(len(r) - 1)
             axis = self.plot.getAxis("left")
-            axis.enableAutoSIPrefix(unit not in NO_SI_PREFIX)
-            self.plot.setLabel("left", QUANTITY.get(unit, r.func[-1]), units=UNIT_SYMBOL.get(unit, unit))
-
-        self.curve.setData(t, y, connect="finite", symbol="o" if len(t) < 3000 else None)
-        self.curve.setFillLevel(0 if mask.all() else None)
+            axis.enableAutoSIPrefix(self._unit not in NO_SI_PREFIX)
+            self.plot.setLabel("left", QUANTITY.get(self._unit, r.sample(len(r) - 1)[4]),
+                               units=UNIT_SYMBOL.get(self._unit, self._unit))
+        self.series.sync(r)
 
         if self.act_follow.isChecked():
+            t = r.t
             span = self.span.currentData()
-            if span:
-                self.vb.setXRange(max(t[0], t[-1] - span), t[-1], padding=0.02)
-            else:
-                self.vb.enableAutoRange(x=True)
-            self.vb.enableAutoRange(y=True)
+            lo = max(t[0], t[-1] - span) if span else t[0]
+            self.vb.setXRange(lo, max(t[-1], lo + 1e-3), padding=0.02)
+        self.view_dirty = True
         self.update_stats()
 
-    def update_stats(self):
-        self.box_all.show_stats(compute_stats(self._t, self._y, self._unit) if len(self._t) else None,
-                                self._unit, self.supply.value())
-        self.update_selection()
+    def invalidate_view(self, *_):
+        self.view_dirty = True
 
-    def update_selection(self):
-        if not self.act_sel.isChecked() or not len(self._t):
-            self.box_sel.show_stats(None, self._unit, 0)
+    def visible_indices(self, margin=1):
+        (x0, x1), _ = self.vb.viewRange()
+        t = self.rec.t
+        i0 = max(int(np.searchsorted(t, x0)) - margin, 0)
+        i1 = min(int(np.searchsorted(t, x1, side="right")) + margin, self.series.n)
+        return i0, i1
+
+    def render(self):
+        n = self.series.n
+        if not n:
+            self.curve.setData([], [])
             return
-        lo, hi = self.region.getRegion()
-        sel = (self._t >= lo) & (self._t <= hi)
-        st = compute_stats(self._t[sel], self._y[sel], self._unit) if sel.any() else None
-        self.box_sel.show_stats(st, self._unit, self.supply.value())
+        i0, i1 = self.visible_indices()
+        width = max(int(self.vb.width()), 200)
+        x, y, raw = self.series.envelope(self.rec.t, i0, i1, POINTS_PER_PIXEL * width)
+        if self.auto_y:
+            self.fit_y(*self.visible_indices(margin=0))
+        show_symbols = raw and (i1 - i0) <= SYMBOLS_MAX_VISIBLE
+        if show_symbols != self._symbols:
+            self._symbols = show_symbols
+            self.curve.setSymbol("o" if show_symbols else None)
+        # No fill under the curve: an antialiased fill costs ~0.5 s per redraw in Qt.
+        self.curve.setData(x, y, connect="finite")
+
+    def fit_y(self, i0, i1):
+        mm = self.series.minmax(i0, i1) if i1 > i0 else None
+        if mm is None:
+            return
+        lo, hi = mm
+        pad = (hi - lo) * 0.08 or abs(hi) * 0.05 or 1e-9
+        self.vb.setYRange(lo - pad, hi + pad, padding=0)
+
+    def on_manual_range(self, mask=None, *_):
+        self.act_follow.setChecked(False)
+        if mask is None or (len(mask) > 1 and mask[1]):
+            self.auto_y = False
+
+    def update_stats(self):
+        st = self.series.stats(self.rec.t, 0, self.series.n, self._unit) if self.series.n else None
+        self.box_all.show_stats(st, self._unit, self.supply.value())
+        self.update_selections()
+
+    def selection_stats(self, sel):
+        if not self.series.n:
+            return None
+        lo, hi = sel.bounds()
+        t = self.rec.t
+        i0 = int(np.searchsorted(t, lo))
+        i1 = int(np.searchsorted(t, hi, side="right"))
+        return self.series.stats(t, i0, i1, self._unit)
+
+    def update_selections(self):
+        self.sel_table.blockSignals(True)
+        for row, sel in enumerate(self.selections):
+            st = self.selection_stats(sel)
+            cells = ["–", "–", "–"]
+            if st:
+                charge = pg.siFormat(st["charge"], precision=3, suffix="Ah") if st["charge"] is not None else "–"
+                cells = [fmt_duration(st["dur"], True), fmt_value(st["avg"], self._unit, 4), charge]
+            for col, text in enumerate(cells, start=1):
+                self.sel_table.item(row, col).setText(text)
+        self.sel_table.blockSignals(False)
+        if self.active is not None:
+            sel = self.selections[self.active]
+            self.box_sel.setTitle(f"Selection: {sel.name}")
+            self.box_sel.show_stats(self.selection_stats(sel), self._unit, self.supply.value())
+        else:
+            self.box_sel.setTitle("Selection")
+            self.box_sel.show_stats(None, self._unit, 0)
 
     def on_follow(self):
         if self.act_follow.isChecked():
-            self.dirty = True
+            self.auto_y = True
+            self.data_dirty = True
 
     def fit_view(self):
         self.act_follow.setChecked(False)
-        self.vb.autoRange()
+        self.auto_y = True
+        t = self.rec.t
+        if len(t):
+            self.vb.setXRange(t[0], max(t[-1], t[0] + 1e-3), padding=0.02)
+        self.view_dirty = True
 
-    def on_selection(self, on):
-        self.box_sel.setVisible(on)
-        if on:
+    # selections
+
+    def add_selection(self, lo=None, hi=None, name=None, color=None):
+        if lo is None:
             (x0, x1), _ = self.vb.viewRange()
             w = x1 - x0
-            self.region.setRegion((x0 + w * 0.3, x0 + w * 0.7))
-            self.plot.addItem(self.region, ignoreBounds=True)
+            lo, hi = x0 + w * 0.4, x0 + w * 0.6
+        self.sel_counter += 1
+        sel = Selection(name or f"Sel {self.sel_counter}", lo, hi,
+                        color or SEL_COLORS[(self.sel_counter - 1) % len(SEL_COLORS)])
+        sel.region.sigRegionChanged.connect(lambda _, s=sel: self.on_region_changed(s))
+        sel.region.sigRegionChangeFinished.connect(lambda *_: self.mark_unsaved())
+        self.plot.addItem(sel.region, ignoreBounds=True)
+        self.selections.append(sel)
+
+        row = self.sel_table.rowCount()
+        self.sel_table.blockSignals(True)
+        self.sel_table.insertRow(row)
+        name_item = QTableWidgetItem(sel.name)
+        name_item.setForeground(QColor(sel.color))
+        self.sel_table.setItem(row, 0, name_item)
+        for col in (1, 2, 3):
+            item = QTableWidgetItem("–")
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.sel_table.setItem(row, col, item)
+        self.sel_table.blockSignals(False)
+        self.set_active(row)
+        self.mark_unsaved()
+        return sel
+
+    def remove_selection(self):
+        if self.active is None:
+            return
+        sel = self.selections.pop(self.active)
+        self.plot.removeItem(sel.region)
+        self.sel_table.blockSignals(True)
+        self.sel_table.removeRow(self.active)
+        self.sel_table.blockSignals(False)
+        self.active = None
+        self.set_active(min(self.sel_table.rowCount() - 1, self.sel_table.currentRow()))
+        self.mark_unsaved()
+
+    def clear_selections(self):
+        for sel in self.selections:
+            self.plot.removeItem(sel.region)
+        self.selections.clear()
+        self.sel_table.setRowCount(0)
+        self.active = None
+        self.sel_counter = 0
+        self.update_selections()
+
+    def set_active(self, row):
+        if row is None or row < 0 or row >= len(self.selections):
+            row = None
+        self.active = row
+        for i, sel in enumerate(self.selections):
+            sel.set_active(i == row)
+        if row is not None and self.sel_table.currentRow() != row:
+            self.sel_table.blockSignals(True)
+            self.sel_table.selectRow(row)
+            self.sel_table.blockSignals(False)
+        self.update_selections()
+
+    def on_region_changed(self, sel):
+        row = self.selections.index(sel)
+        if row != self.active:
+            self.set_active(row)
         else:
-            self.plot.removeItem(self.region)
-        self.update_selection()
+            self.update_selections()
+
+    def on_sel_renamed(self, item):
+        if item.column() != 0:
+            return
+        name = item.text().strip() or self.selections[item.row()].name
+        self.selections[item.row()].rename(name)
+        self.mark_unsaved()
+        self.update_selections()
+
+    def on_sel_double_click(self, row, col):
+        if col != 0:
+            self.set_active(row)
+            self.zoom_selection()
+
+    def zoom_selection(self):
+        if self.active is None:
+            return
+        lo, hi = self.selections[self.active].bounds()
+        self.act_follow.setChecked(False)
+        self.auto_y = True
+        self.vb.setXRange(lo, hi, padding=0.15)
 
     def on_mouse(self, evt):
         pos = evt[0]
-        if not len(self._t) or not self.plot.sceneBoundingRect().contains(pos):
+        t = self.rec.t
+        if not len(t) or not self.plot.sceneBoundingRect().contains(pos):
             self.vline.hide()
             self.hover.hide()
             return
         x = self.vb.mapSceneToView(pos).x()
-        i = int(np.clip(np.searchsorted(self._t, x), 1, len(self._t) - 1))
-        if abs(self._t[i - 1] - x) < abs(self._t[i] - x):
+        i = int(np.clip(np.searchsorted(t, x), 1, len(t) - 1)) if len(t) > 1 else 0
+        if i and abs(t[i - 1] - x) < abs(t[i] - x):
             i -= 1
-        t, v = self._t[i], self.rec.v[i]
-        self.vline.setPos(t)
-        self.hover.setText(f"{fmt_duration(t, True)}\n{fmt_value(v, self.rec.unit[i], 5)}")
+        ti, epoch, v, unit, *_ = self.rec.sample(i)
+        self.vline.setPos(ti)
+        self.hover.setText(f"{fmt_duration(ti, True)}  ({fmt_clock(epoch)})\n{fmt_value(v, unit, 5)}")
         (x0, x1), (_, y1) = self.vb.viewRange()
-        self.hover.setAnchor((1, 0) if t > (x0 + x1) / 2 else (0, 0))
-        self.hover.setPos(t, y1)
+        self.hover.setAnchor((1, 0) if ti > (x0 + x1) / 2 else (0, 0))
+        self.hover.setPos(ti, y1)
         self.vline.show()
         self.hover.show()
 
@@ -609,23 +807,27 @@ class MainWindow(QMainWindow):
         if not self.unsaved or not len(self.rec):
             return True
         res = QMessageBox.question(
-            self, APP_NAME, "The recording has unsaved data. Save it first?",
+            self, APP_NAME, "The recording has unsaved changes. Save them first?",
             QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
         if res == QMessageBox.StandardButton.Save:
-            return self.save_file()
+            return self.save()
         return res == QMessageBox.StandardButton.Discard
 
     def reset_recording(self):
         self.rec.clear()
+        self.clear_selections()
         self.log_path = None
-        self.source_file = None
+        self.file_path = None
+        self.from_file = False
         self.unsaved = False
-        self._t, self._y, self._unit = np.empty(0), np.empty(0), ""
+        self.series.reset(None)
+        self._unit = ""
+        self.auto_y = True
         self.lbl_value.setText("–")
         self.lbl_mode.setText("no data")
         self.lbl_log.setText("")
         self.act_follow.setChecked(True)
-        self.dirty = True
+        self.data_dirty = True
         self._update_title()
 
     def clear(self):
@@ -638,23 +840,43 @@ class MainWindow(QMainWindow):
         if running:
             self.start_capture()
 
-    def save_file(self):
+    def save(self):
+        if self.file_path and self.file_path.endswith(PROJECT_EXT):
+            return self.write_file(self.file_path)
+        return self.save_as()
+
+    def save_as(self):
         if not len(self.rec):
             QMessageBox.information(self, APP_NAME, "Nothing to save.")
             return False
-        start = Path(self.settings.value("lastdir", str(Path.home()))) / f"ut71a_{datetime.now():%Y%m%d_%H%M%S}.csv"
-        path, _ = QFileDialog.getSaveFileName(self, "Save recording", str(start), "CSV (*.csv)")
+        start = Path(self.settings.value("lastdir", str(Path.home()))) / f"ut71a_{datetime.now():%Y%m%d_%H%M%S}"
+        project_filter = f"UT71A project (*{PROJECT_EXT})"
+        path, chosen = QFileDialog.getSaveFileName(self, "Save recording", str(start),
+                                                   f"{project_filter};;CSV samples only (*.csv)")
         if not path:
             return False
+        if not path.endswith((PROJECT_EXT, ".csv")):
+            path += PROJECT_EXT if chosen == project_filter else ".csv"
+        return self.write_file(path)
+
+    def write_file(self, path):
         try:
-            self.rec.save(path)
+            if path.endswith(PROJECT_EXT):
+                save_project(path, self.rec, [s.to_dict() for s in self.selections], self.supply.value())
+            else:
+                self.rec.save_csv(path)
         except OSError as e:
             QMessageBox.critical(self, APP_NAME, f"Save failed:\n{e}")
             return False
         self.settings.setValue("lastdir", str(Path(path).parent))
-        self.unsaved = False
+        if path.endswith(PROJECT_EXT):
+            self.file_path = path
+            self.unsaved = False
+        elif not self.selections:
+            self.unsaved = False
         self._update_title()
-        self.statusBar().showMessage(f"Saved {path}", 5000)
+        note = "" if path.endswith(PROJECT_EXT) or not self.selections else " (selections are kept only in projects)"
+        self.statusBar().showMessage(f"Saved {path}{note}", 6000)
         return True
 
     def open_file(self):
@@ -663,30 +885,40 @@ class MainWindow(QMainWindow):
         if not self.confirm_discard():
             return
         start = self.settings.value("lastdir", str(LOG_DIR if LOG_DIR.exists() else Path.home()))
-        path, _ = QFileDialog.getOpenFileName(self, "Open recording", start, "CSV (*.csv);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open recording", start,
+            f"Recordings (*{PROJECT_EXT} *.csv);;UT71A project (*{PROJECT_EXT});;CSV (*.csv);;All files (*)")
         if path:
             self.load_path(path)
 
     def load_path(self, path):
         self.reset_recording()
         try:
-            self.rec.load(path)
-        except (OSError, ValueError, KeyError) as e:
+            if path.endswith(PROJECT_EXT):
+                sels, supply_v = load_project(path, self.rec)
+                if supply_v is not None:
+                    self.supply.setValue(float(supply_v))
+            else:
+                self.rec.load_csv(path)
+                sels = []
+        except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as e:
             self.rec.clear()
-            msg = f"missing column {e}" if isinstance(e, KeyError) else str(e)
+            msg = f"missing data: {e.args[0]}" if isinstance(e, KeyError) else str(e)
             QMessageBox.critical(self, APP_NAME, f"Cannot load {path}:\n{msg}")
             return
         self.settings.setValue("lastdir", str(Path(path).parent))
-        self.source_file = path
+        self.file_path = path
+        self.from_file = True
         self.show_readout(len(self.rec) - 1)
         self.act_follow.setChecked(False)
-        self.refresh_now()
-        self.vb.autoRange()
+        self.process_new_data()
+        self.fit_view()
+        self.render()
+        for s in sels:
+            self.add_selection(float(s["start"]), float(s["end"]), s.get("name"), s.get("color"))
+        self.set_active(0 if self.selections else None)
+        self.unsaved = False
         self._update_title()
-
-    def refresh_now(self):
-        self.dirty = True
-        self.refresh()
 
     def closeEvent(self, e):
         if not self.confirm_discard():
