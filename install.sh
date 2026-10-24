@@ -12,7 +12,7 @@ PYTHON_TESTED=3.14.5
 
 for arg in "$@"; do
     case "$arg" in
-        -h|--help) sed -n '2,4p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,5p' "$0"; exit 0 ;;
         *) echo "Unknown option: $arg" >&2; exit 2 ;;
     esac
 done
