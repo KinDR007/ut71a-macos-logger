@@ -92,7 +92,9 @@ Hover over the plot to read the time, clock time and value of a sample.
 edges (◆ handle, the cursor changes to ↔) to resize, drag the inside or the colored header to move.
 Hover over the header to see Δt, clock range and full statistics; ✕ in the header removes it.
 The Selections table lists all regions; click a row to show its statistics, double-click the name
-to rename it, double-click another column (or **Zoom**) to zoom to it.
+to rename it, double-click another column (or **Zoom**) to zoom to it. The **Project** and **View**
+rows summarize the whole recording and the visible range; the toolbar shows FROM / TO / Δ of the
+active selection.
 
 **Overview:** the strip above the plot shows the whole recording with the visible part highlighted
 and its Δt. Drag the highlight to pan, drag its edges to zoom, click elsewhere to jump.

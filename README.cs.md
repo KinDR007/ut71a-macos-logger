@@ -93,6 +93,8 @@ Po najetí na graf se zobrazí čas od začátku, systémový čas a hodnota vzo
 Po najetí na hlavičku se zobrazí Δt, časový rozsah a kompletní statistiky; ✕ v hlavičce úsek odebere.
 Tabulka Selections ukazuje všechny úseky; kliknutím na řádek se zobrazí jeho statistiky,
 dvojklikem na název ho přejmenuješ, dvojklikem na jiný sloupec (nebo **Zoom**) se na něj přiblížíš.
+Řádky **Project** a **View** shrnují celý záznam a zobrazený úsek; lišta ukazuje FROM / TO / Δ
+aktivního výběru.
 
 **Přehled:** pás nad grafem ukazuje celý záznam se zvýrazněnou zobrazenou částí a její Δt.
 Tažením zvýraznění se posouvá pohled, tažením jeho okrajů se mění zoom, kliknutím jinam se přeskočí.

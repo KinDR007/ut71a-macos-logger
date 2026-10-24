@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -66,6 +67,7 @@ AXIS_WIDTH = 64  # fixed left axis width keeps the overview aligned with the plo
 RED = "#ef5b5b"
 HEADER_SPAN = 0.955  # selection header band: top part of the plot, fraction of its height
 HEADER_TEXT = "#101215"
+FIXED_ROWS = ["Project", "View"]  # summary rows below the selections
 SEL_COLORS = ["#4ea8de", "#c77dff", "#3ecf8e", "#ffd166", "#ef5b5b", "#80ffdb"]
 
 STYLE = f"""
@@ -364,6 +366,13 @@ class MainWindow(QMainWindow):
         self.chk_log = QCheckBox("Auto-log to CSV")
         self.chk_log.setToolTip(f"Write every sample to {LOG_DIR}")
         tb.addWidget(self.chk_log)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        spacer.setStyleSheet("background: transparent")
+        tb.addWidget(spacer)
+        self.lbl_range = QLabel()
+        self.lbl_range.setToolTip("Active selection")
+        tb.addWidget(self.lbl_range)
 
         # plot
         pg.setConfigOptions(antialias=True, background=BG, foreground=MUTED)
@@ -465,11 +474,12 @@ class MainWindow(QMainWindow):
         self.sel_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.sel_table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked
                                        | QAbstractItemView.EditTrigger.EditKeyPressed)
-        self.sel_table.setMinimumHeight(110)
         self.sel_table.setToolTip("Double-click a name to rename, another column to zoom to the selection")
         self.sel_table.itemChanged.connect(self.on_sel_renamed)
-        self.sel_table.currentCellChanged.connect(lambda row, *_: self.set_active(row))
+        self.sel_table.currentCellChanged.connect(
+            lambda row, *_: self.set_active(row) if row < len(self.selections) else None)
         self.sel_table.cellDoubleClicked.connect(self.on_sel_double_click)
+        self.add_fixed_rows()
         sl.addWidget(self.sel_table)
         btns = QHBoxLayout()
         for text, action in (("+ Add", lambda: self.add_selection()), ("Remove", lambda: self.remove_selection()),
@@ -715,6 +725,7 @@ class MainWindow(QMainWindow):
         # No fill under the curve: an antialiased fill costs ~0.5 s per redraw in Qt.
         self.curve.setData(x, y, connect="finite")
         self.sync_overview_region()
+        self.update_view_row()
 
     def render_overview(self):
         n = self.series.n
@@ -790,17 +801,63 @@ class MainWindow(QMainWindow):
         i1 = int(np.searchsorted(t, hi, side="right"))
         return self.series.stats(t, i0, i1, self._unit)
 
+    def add_fixed_rows(self):
+        font = self.sel_table.font()
+        font.setItalic(True)
+        for name in FIXED_ROWS:
+            row = self.sel_table.rowCount()
+            self.sel_table.insertRow(row)
+            for col in range(4):
+                item = QTableWidgetItem(name if col == 0 else "–")
+                item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                item.setForeground(QColor(MUTED))
+                item.setFont(font)
+                if col:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.sel_table.setItem(row, col, item)
+
+    def fit_table_height(self):
+        t = self.sel_table
+        rows = sum(t.rowHeight(r) for r in range(t.rowCount()))
+        t.setFixedHeight(min(t.horizontalHeader().height() + rows + 2 * t.frameWidth() + 2, 360))
+
+    def set_table_row(self, row, st):
+        cells = ["–", "–", "–"]
+        if st:
+            charge = pg.siFormat(st["charge"], precision=3, suffix="Ah") if st["charge"] is not None else "–"
+            cells = [fmt_duration(st["dur"], True), fmt_value(st["avg"], self._unit, 4), charge]
+        for col, text in enumerate(cells, start=1):
+            self.sel_table.item(row, col).setText(text)
+
+    def update_view_row(self):
+        st = self.series.stats(self.rec.t, *self.visible_indices(margin=0), self._unit) if self.series.n else None
+        self.sel_table.blockSignals(True)
+        self.set_table_row(len(self.selections) + 1, st)
+        self.sel_table.blockSignals(False)
+
+    def update_range_label(self):
+        if self.active is None:
+            self.lbl_range.setText("")
+            return
+        sel = self.selections[self.active]
+        lo, hi = sel.bounds()
+        k = f"color:{MUTED}"
+        self.lbl_range.setText(
+            f"<span style='color:{sel.color}'>■</span> {html.escape(sel.name)} &nbsp; "
+            f"<span style='{k}'>FROM</span> {fmt_duration(lo, True)} &nbsp; "
+            f"<span style='{k}'>TO</span> {fmt_duration(hi, True)} &nbsp; "
+            f"<span style='{k}'>Δ</span> {fmt_duration(hi - lo, True)} ")
+
     def update_selections(self):
+        self.fit_table_height()
         self.sel_table.blockSignals(True)
         for row, sel in enumerate(self.selections):
-            st = self.selection_stats(sel)
-            cells = ["–", "–", "–"]
-            if st:
-                charge = pg.siFormat(st["charge"], precision=3, suffix="Ah") if st["charge"] is not None else "–"
-                cells = [fmt_duration(st["dur"], True), fmt_value(st["avg"], self._unit, 4), charge]
-            for col, text in enumerate(cells, start=1):
-                self.sel_table.item(row, col).setText(text)
+            self.set_table_row(row, self.selection_stats(sel))
+        project = self.series.stats(self.rec.t, 0, self.series.n, self._unit) if self.series.n else None
+        self.set_table_row(len(self.selections), project)
         self.sel_table.blockSignals(False)
+        self.update_view_row()
+        self.update_range_label()
         if self.active is not None:
             sel = self.selections[self.active]
             self.box_sel.setTitle(f"Selection: {sel.name}")
@@ -839,7 +896,7 @@ class MainWindow(QMainWindow):
         self.selections.append(sel)
         self.view_dirty = True  # make room for the header band
 
-        row = self.sel_table.rowCount()
+        row = len(self.selections) - 1
         self.sel_table.blockSignals(True)
         self.sel_table.insertRow(row)
         name_item = QTableWidgetItem(sel.name)
@@ -866,7 +923,7 @@ class MainWindow(QMainWindow):
         self.sel_table.removeRow(row)
         self.sel_table.blockSignals(False)
         self.active = None
-        self.set_active(min(self.sel_table.rowCount() - 1, row))
+        self.set_active(min(len(self.selections) - 1, row))
         self.view_dirty = True
         self.mark_unsaved()
 
@@ -876,6 +933,7 @@ class MainWindow(QMainWindow):
                 self.plot.removeItem(item)
         self.selections.clear()
         self.sel_table.setRowCount(0)
+        self.add_fixed_rows()
         self.active = None
         self.sel_counter = 0
         self.update_selections()
@@ -900,7 +958,7 @@ class MainWindow(QMainWindow):
             self.update_selections()
 
     def on_sel_renamed(self, item):
-        if item.column() != 0:
+        if item.column() != 0 or item.row() >= len(self.selections):
             return
         name = item.text().strip() or self.selections[item.row()].name
         self.selections[item.row()].rename(name)
@@ -908,6 +966,10 @@ class MainWindow(QMainWindow):
         self.update_selections()
 
     def on_sel_double_click(self, row, col):
+        if row >= len(self.selections):
+            if row == len(self.selections):  # Project row
+                self.fit_view()
+            return
         if col != 0:
             self.set_active(row)
             self.zoom_selection()
@@ -989,13 +1051,13 @@ class MainWindow(QMainWindow):
 
     def reset_recording(self):
         self.rec.clear()
+        self.series.reset(None)
+        self._unit = ""
         self.clear_selections()
         self.log_path = None
         self.file_path = None
         self.from_file = False
         self.unsaved = False
-        self.series.reset(None)
-        self._unit = ""
         self.auto_y = True
         self.lbl_value.setText("–")
         self.lbl_mode.setText("no data")
