@@ -2,27 +2,17 @@
 # Install everything needed to run UT71A Logger on a clean macOS.
 # Safe to run repeatedly: installed parts are skipped.
 #
-# Usage: ./install.sh [--no-sigrok]
+# Usage: ./install.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 
 PYTHON_FORMULA=python@3.14
-SIGROK_FORMULAE=(sigrok-cli)
+# Version the project was tested with (Homebrew always installs its current version).
+PYTHON_TESTED=3.14.5
 
-# Versions the project was tested with (Homebrew always installs its current version).
-TESTED_VERSIONS=(
-    "python@3.14 3.14.5"
-    "sigrok-cli 0.7.2"
-    "libsigrok 0.5.2_5"
-    "hidapi 0.15.0"
-    "libusb 1.0.29"
-)
-
-WITH_SIGROK=1
 for arg in "$@"; do
     case "$arg" in
-        --no-sigrok) WITH_SIGROK=0 ;;
-        -h|--help) sed -n '2,6p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,4p' "$0"; exit 0 ;;
         *) echo "Unknown option: $arg" >&2; exit 2 ;;
     esac
 done
@@ -50,35 +40,18 @@ if ! command -v brew >/dev/null 2>&1; then
 fi
 brew --version | head -1
 
-formulae=("$PYTHON_FORMULA")
-[ "$WITH_SIGROK" = 1 ] && formulae+=("${SIGROK_FORMULAE[@]}")
-
-step "Homebrew packages: ${formulae[*]}"
-for f in "${formulae[@]}"; do
-    if brew list --versions "$f" >/dev/null 2>&1; then
-        echo "$f already installed"
-    else
-        brew install "$f"
-    fi
-done
-
-step "Version check"
-for entry in "${TESTED_VERSIONS[@]}"; do
-    name=${entry% *}
-    tested=${entry#* }
-    case "$name" in
-        python@*) ;;
-        *) [ "$WITH_SIGROK" = 1 ] || continue ;;
-    esac
-    installed=$(brew list --versions "$name" 2>/dev/null | awk '{print $NF}')
-    if [ -z "$installed" ]; then
-        warn "$name is not installed"
-    elif [ "$installed" = "$tested" ]; then
-        printf '%-12s %-10s OK\n' "$name" "$installed"
-    else
-        printf '%-12s %-10s (tested with %s)\n' "$name" "$installed" "$tested"
-    fi
-done
+step "Python ($PYTHON_FORMULA)"
+if brew list --versions "$PYTHON_FORMULA" >/dev/null 2>&1; then
+    echo "$PYTHON_FORMULA already installed"
+else
+    brew install "$PYTHON_FORMULA"
+fi
+installed=$(brew list --versions "$PYTHON_FORMULA" | awk '{print $NF}')
+if [ "$installed" = "$PYTHON_TESTED" ]; then
+    echo "$PYTHON_FORMULA $installed OK"
+else
+    warn "$PYTHON_FORMULA $installed installed, tested with $PYTHON_TESTED"
+fi
 
 step "Python virtual environment"
 PY="$(brew --prefix "$PYTHON_FORMULA")/bin/python${PYTHON_FORMULA#python@}"
@@ -99,9 +72,6 @@ assert ut71a.decode(b"000001101\r\n")["function"] == "DC V"
 devs = hid.enumerate(ut71a.VID, ut71a.PID)
 print("UT-D04 cable:", "connected" if devs else "not connected (that is fine for now)")
 PY
-if [ "$WITH_SIGROK" = 1 ]; then
-    sigrok-cli --version | head -1
-fi
 
 chmod +x run.sh "UT71A Logger.command" ut71a.py ut71a_gui.py 2>/dev/null || true
 

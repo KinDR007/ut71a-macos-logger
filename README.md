@@ -37,13 +37,9 @@ cd ut71a-macos-logger
 The installer is safe to run again; installed parts are skipped. It:
 
 1. Installs [Homebrew](https://brew.sh) if it is missing (asks for your password; installs Xcode Command Line Tools)
-2. Installs `python@3.14` and `sigrok-cli` (with libsigrok, hidapi, libusb) from Homebrew
-3. Compares installed versions with the tested ones (see below)
-4. Creates `.venv` and installs pinned Python packages from `requirements.txt`
-5. Runs a self-test and reports whether the cable is connected
-
-Use `./install.sh --no-sigrok` to skip sigrok. The GUI does not need it
-(see [sigrok on macOS](#sigrok-on-macos)).
+2. Installs `python@3.14` from Homebrew and compares it with the tested version
+3. Creates `.venv` and installs pinned Python packages from `requirements.txt`
+4. Runs a self-test and reports whether the cable is connected
 
 Tested versions:
 
@@ -54,10 +50,9 @@ Tested versions:
 | pyqtgraph | 0.14.0 |
 | numpy | 2.5.4 |
 | hidapi (Python, bundles its own library) | 0.15.0 |
-| sigrok-cli / libsigrok | 0.7.2 / 0.5.2_5 |
-| hidapi / libusb (Homebrew) | 0.15.0 / 1.0.29 |
 
-Homebrew always installs its current version; Python packages are pinned.
+Homebrew always installs its current Python version; Python packages are pinned.
+The `hidapi` package includes the native library, so no other system libraries are needed.
 
 ## Usage
 
@@ -158,19 +153,7 @@ for i in 1 2 3 4 5; do ioreg -p IOUSB -w0 | grep 'USB to Serial'; sleep 1; done
 ### Connected, but no data
 
 - Hold SEND on the meter again (it turns off after a function change or auto power-off).
-- Only one program can use the cable at a time: close other GUI windows, `ut71a.py` or sigrok.
-
-### sigrok on macOS
-
-`sigrok-cli` is installed for reference, but libsigrok 0.5.2 (and current git master) cannot open
-this cable on recent macOS:
-
-```
-sr: serial-hid: Unsupported HIDAPI path format: DevSrvsID:4296573785
-```
-
-libsigrok only understands the older `IOService:` HID path format, while current hidapi on macOS
-(0.15.0 here) reports `DevSrvsID:`. This project talks to the cable directly through hidapi instead.
+- Only one program can use the cable at a time: close other GUI windows or `ut71a.py`.
 
 ## How it works
 

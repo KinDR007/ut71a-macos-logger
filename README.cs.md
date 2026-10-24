@@ -37,13 +37,9 @@ cd ut71a-macos-logger
 Instalátor lze spouštět opakovaně; co už je nainstalované, přeskočí. Postup:
 
 1. Pokud chybí [Homebrew](https://brew.sh), nainstaluje ho (zeptá se na heslo; doinstaluje Xcode Command Line Tools)
-2. Z Homebrew nainstaluje `python@3.14` a `sigrok-cli` (s libsigrok, hidapi, libusb)
-3. Porovná nainstalované verze s otestovanými (viz níže)
-4. Vytvoří `.venv` a nainstaluje Python balíčky v pevných verzích z `requirements.txt`
-5. Spustí self-test a ohlásí, zda je kabel připojený
-
-`./install.sh --no-sigrok` instalaci sigroku přeskočí. GUI ho nepotřebuje
-(viz [sigrok na macOS](#sigrok-na-macos)).
+2. Z Homebrew nainstaluje `python@3.14` a porovná ho s otestovanou verzí
+3. Vytvoří `.venv` a nainstaluje Python balíčky v pevných verzích z `requirements.txt`
+4. Spustí self-test a ohlásí, zda je kabel připojený
 
 Otestované verze:
 
@@ -54,10 +50,9 @@ Otestované verze:
 | pyqtgraph | 0.14.0 |
 | numpy | 2.5.4 |
 | hidapi (Python, obsahuje vlastní knihovnu) | 0.15.0 |
-| sigrok-cli / libsigrok | 0.7.2 / 0.5.2_5 |
-| hidapi / libusb (Homebrew) | 0.15.0 / 1.0.29 |
 
-Homebrew vždy instaluje svou aktuální verzi; Python balíčky jsou zafixované.
+Homebrew vždy instaluje aktuální verzi Pythonu; Python balíčky jsou zafixované.
+Balíček `hidapi` obsahuje nativní knihovnu, další systémové knihovny nejsou potřeba.
 
 ## Použití
 
@@ -159,19 +154,7 @@ for i in 1 2 3 4 5; do ioreg -p IOUSB -w0 | grep 'USB to Serial'; sleep 1; done
 ### Připojeno, ale nechodí data
 
 - Znovu podrž SEND na multimetru (vypne se po změně funkce nebo automatickém vypnutí).
-- Kabel může používat jen jeden program: zavři další okna GUI, `ut71a.py` nebo sigrok.
-
-### sigrok na macOS
-
-`sigrok-cli` se instaluje pro úplnost, ale libsigrok 0.5.2 (ani aktuální git master) tento kabel
-na novém macOS neotevře:
-
-```
-sr: serial-hid: Unsupported HIDAPI path format: DevSrvsID:4296573785
-```
-
-libsigrok rozumí jen staršímu formátu HID cesty `IOService:`, zatímco aktuální hidapi na macOS
-(zde 0.15.0) vrací `DevSrvsID:`. Tento projekt proto s kabelem komunikuje přímo přes hidapi.
+- Kabel může používat jen jeden program: zavři další okna GUI nebo `ut71a.py`.
 
 ## Jak to funguje
 
