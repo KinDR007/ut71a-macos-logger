@@ -169,6 +169,14 @@ class Reader(QThread):
         self.status.emit("Stopped", "stopped")
 
 
+class TimeZoomViewBox(pg.ViewBox):
+    """Mouse wheel zooms the time axis only; with Ctrl (or Cmd) it zooms both axes."""
+
+    def wheelEvent(self, ev, axis=None):
+        both = ev.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)
+        super().wheelEvent(ev, axis if axis is not None or both else 0)
+
+
 class TimeAxis(pg.AxisItem):
     def tickStrings(self, values, scale, spacing):
         return [fmt_duration(v, spacing < 1) for v in values]
@@ -389,7 +397,8 @@ class MainWindow(QMainWindow):
         # plot
         pg.setConfigOptions(antialias=True, background=BG, foreground=MUTED)
         self.clock_axis = ClockAxis(lambda: self.rec.t0)
-        self.plot = pg.PlotWidget(axisItems={"bottom": TimeAxis("bottom"), "top": self.clock_axis})
+        self.plot = pg.PlotWidget(viewBox=TimeZoomViewBox(),
+                                 axisItems={"bottom": TimeAxis("bottom"), "top": self.clock_axis})
         self.plot.showAxis("top")
         self.plot.showGrid(x=True, y=True, alpha=0.15)
         self.plot.setLabel("bottom", "Time")

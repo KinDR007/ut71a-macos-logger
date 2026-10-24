@@ -85,7 +85,8 @@ Changing the function or an automatic power-off turns SEND off; enable it again.
 | S | Add a selection |
 | Delete / Backspace | Remove the active selection |
 
-Mouse: wheel zooms, drag pans (turns Follow off), right-drag zooms one axis.
+Mouse: wheel zooms the time axis, Ctrl (or ⌘) + wheel zooms both axes, drag pans (turns Follow off),
+right-drag zooms one axis.
 Hover over the plot to read the time, clock time and value of a sample.
 
 **Selections:** press S (or **+ Selection**) to add a region in the middle of the view. Drag the

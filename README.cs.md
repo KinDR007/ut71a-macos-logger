@@ -85,7 +85,8 @@ Změna funkce nebo automatické vypnutí SEND vypne; je potřeba ho znovu zapnou
 | S | Přidat výběr |
 | Delete / Backspace | Odebrat aktivní výběr |
 
-Myš: kolečko zoomuje, tažení posouvá (vypne sledování), tažení pravým tlačítkem zoomuje jednu osu.
+Myš: kolečko zoomuje časovou osu, Ctrl (nebo ⌘) + kolečko zoomuje obě osy, tažení posouvá (vypne
+sledování), tažení pravým tlačítkem zoomuje jednu osu.
 Po najetí na graf se zobrazí čas od začátku, systémový čas a hodnota vzorku.
 
 **Výběry:** klávesa S (nebo **+ Selection**) přidá úsek doprostřed zobrazení. Tažením okraje
