@@ -89,9 +89,13 @@ Mouse: wheel zooms, drag pans (turns Follow off), right-drag zooms one axis.
 Hover over the plot to read the time, clock time and value of a sample.
 
 **Selections:** press S (or **+ Selection**) to add a region in the middle of the view. Drag the
-edges (◆ handle, the cursor changes to ↔) to resize, drag the inside to move. The Selections
-table lists all regions; click a row to show its full statistics, double-click the name to
-rename it, double-click another column (or **Zoom**) to zoom to it.
+edges (◆ handle, the cursor changes to ↔) to resize, drag the inside or the colored header to move.
+Hover over the header to see Δt, clock range and full statistics; ✕ in the header removes it.
+The Selections table lists all regions; click a row to show its statistics, double-click the name
+to rename it, double-click another column (or **Zoom**) to zoom to it.
+
+**Overview:** the strip above the plot shows the whole recording with the visible part highlighted
+and its Δt. Drag the highlight to pan, drag its edges to zoom, click elsewhere to jump.
 
 With **Auto-log to CSV** enabled, each sample is written to `logs/ut71a_YYYYMMDD_HHMMSS.csv` as it arrives.
 Enter the supply voltage in the side panel to get energy from the measured charge.

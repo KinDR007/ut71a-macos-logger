@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """UT71A Logger: live plot, statistics and CSV logging for UNI-T UT71x multimeters."""
 import csv
+import html
 import math
 import sys
 import time
@@ -61,7 +62,10 @@ TEXT = "#d7dae0"
 MUTED = "#8a909c"
 ACCENT = "#ff8c42"
 GREEN = "#3ecf8e"
+AXIS_WIDTH = 64  # fixed left axis width keeps the overview aligned with the plot
 RED = "#ef5b5b"
+HEADER_SPAN = 0.955  # selection header band: top part of the plot, fraction of its height
+HEADER_TEXT = "#101215"
 SEL_COLORS = ["#4ea8de", "#c77dff", "#3ecf8e", "#ffd166", "#ef5b5b", "#80ffdb"]
 
 STYLE = f"""
@@ -202,28 +206,76 @@ class Selection:
         for line in self.region.lines:
             line.setCursor(Qt.CursorShape.SizeHorCursor)
             line.addMarker("<|>", position=0.5, size=12)  # visible handle, also widens the grab area
-        self.label = pg.InfLineLabel(self.region.lines[0], text=name, position=0.96, anchors=[(0, 0), (0, 0)],
-                                     color=color)
+        # Otii-style header: a colored band at the top with the name and a close button.
+        # It ignores mouse drags, so dragging the header moves the region below it.
+        self.header_brush = pg.mkBrush(c.red(), c.green(), c.blue(), 150)
+        self.header_active_brush = pg.mkBrush(c.red(), c.green(), c.blue(), 235)
+        self.header = pg.LinearRegionItem((lo, hi), movable=False, span=(HEADER_SPAN, 1), brush=self.header_brush,
+                                          pen=pg.mkPen(None))
+        self.header.setZValue(9)  # below the region, so its line labels stay on top
+        for line in self.header.lines:
+            line.hide()
+        self.region.sigRegionChanged.connect(lambda r: self.header.setRegion(r.getRegion()))
+        label_pos = (1 + HEADER_SPAN) / 2
+        self.label = pg.InfLineLabel(self.region.lines[0], text=f" {name}", position=label_pos,
+                                     anchors=[(0, 0.5), (0, 0.5)], color=HEADER_TEXT)
+        self.close_label = pg.InfLineLabel(self.region.lines[1], text="✕ ", position=label_pos,
+                                           anchors=[(1, 0.5), (1, 0.5)], color=HEADER_TEXT)
+        self.close_label.setToolTip("Remove selection")
 
     def bounds(self):
         return self.region.getRegion()
 
+    def items(self):
+        return self.region, self.header
+
+    def header_hit(self, vb, scene_pos):
+        p = vb.mapSceneToView(scene_pos)
+        lo, hi = self.bounds()
+        _, (y0, y1) = vb.viewRange()
+        return lo <= p.x() <= hi and p.y() >= y0 + (y1 - y0) * HEADER_SPAN
+
+    def close_hit(self, scene_pos):
+        return self.close_label.sceneBoundingRect().adjusted(-3, -3, 3, 3).contains(scene_pos)
+
     def set_active(self, on):
         self.region.setBrush(self.active_brush if on else self.brush)
         self.region.update()
+        self.header.setBrush(self.header_active_brush if on else self.header_brush)
+        self.header.update()
 
     def rename(self, name):
         self.name = name
-        self.label.setFormat(name)
+        self.label.setFormat(f" {name}")
 
     def to_dict(self):
         lo, hi = self.bounds()
         return {"name": self.name, "start": lo, "end": hi, "color": self.color}
 
 
+STATS_ROWS = [("dur", "Duration"), ("n", "Samples"), ("rate", "Rate"), ("min", "Min"), ("max", "Max"),
+              ("avg", "Average"), ("charge", "Charge"), ("energy", "Energy")]
+
+
+def stats_texts(st, unit, supply_v):
+    """Formatted values for STATS_ROWS keys."""
+    if st is None:
+        return {key: "–" for key, _ in STATS_ROWS}
+    charge = st["charge"]
+    return {
+        "dur": fmt_duration(st["dur"], True),
+        "n": str(st["n"]),
+        "rate": fmt_rate(st["rate"]),
+        "min": fmt_value(st["min"], unit, 5),
+        "max": fmt_value(st["max"], unit, 5),
+        "avg": fmt_value(st["avg"], unit, 5),
+        "charge": "–" if charge is None else pg.siFormat(charge, precision=4, suffix="Ah"),
+        "energy": "–" if charge is None else pg.siFormat(charge * supply_v, precision=4, suffix="Wh"),
+    }
+
+
 class StatsBox(QGroupBox):
-    ROWS = [("dur", "Duration"), ("n", "Samples"), ("rate", "Rate"), ("min", "Min"), ("max", "Max"),
-            ("avg", "Average"), ("charge", "Charge"), ("energy", "Energy")]
+    ROWS = STATS_ROWS
 
     def __init__(self, title):
         super().__init__(title)
@@ -241,22 +293,8 @@ class StatsBox(QGroupBox):
             self.labels[key] = v
 
     def show_stats(self, st, unit, supply_v):
-        if st is None:
-            for v in self.labels.values():
-                v.setText("–")
-            return
-        L = self.labels
-        L["dur"].setText(fmt_duration(st["dur"], True))
-        L["n"].setText(str(st["n"]))
-        L["rate"].setText(fmt_rate(st["rate"]))
-        for key in ("min", "max", "avg"):
-            L[key].setText(fmt_value(st[key], unit, 5))
-        if st["charge"] is None:
-            L["charge"].setText("–")
-            L["energy"].setText("–")
-        else:
-            L["charge"].setText(pg.siFormat(st["charge"], precision=4, suffix="Ah"))
-            L["energy"].setText(pg.siFormat(st["charge"] * supply_v, precision=4, suffix="Wh"))
+        for key, text in stats_texts(st, unit, supply_v).items():
+            self.labels[key].setText(text)
 
 
 class MainWindow(QMainWindow):
@@ -272,6 +310,8 @@ class MainWindow(QMainWindow):
         self.series = Series()
         self.data_dirty = False  # new samples to process
         self.view_dirty = False  # plot needs re-rendering
+        self.overview_dirty = False
+        self._ov_sync = False  # overview region is being moved by code
         self.auto_y = True
         self.receiving = False
         self.selections = []
@@ -305,7 +345,7 @@ class MainWindow(QMainWindow):
         self.act_fit = QAction("Fit", self, shortcut=QKeySequence("A"), triggered=self.fit_view)
         self.act_add_sel = QAction("+ Selection", self, shortcut=QKeySequence("S"),
                                    triggered=lambda: self.add_selection())
-        self.act_del_sel = QAction("Remove selection", self, triggered=self.remove_selection)
+        self.act_del_sel = QAction("Remove selection", self, triggered=lambda: self.remove_selection())
         self.act_del_sel.setShortcuts([QKeySequence("Delete"), QKeySequence("Backspace")])
         self.addAction(self.act_del_sel)
         for a in (self.act_run, None, self.act_open, self.act_save, self.act_save_as, self.act_clear, None,
@@ -334,6 +374,7 @@ class MainWindow(QMainWindow):
         self.plot.setLabel("bottom", "Time")
         self.plot.setLabel("top", "Clock")
         self.plot.setMouseEnabled(x=True, y=True)
+        self.plot.getAxis("left").setWidth(AXIS_WIDTH)
         self.vb = self.plot.getViewBox()
         # Ranges are managed here: pyqtgraph auto-range would scan all data on every change.
         self.vb.disableAutoRange()
@@ -354,6 +395,40 @@ class MainWindow(QMainWindow):
             item.hide()
             self.plot.addItem(item, ignoreBounds=True)
         self.mouse_proxy = pg.SignalProxy(self.plot.scene().sigMouseMoved, rateLimit=30, slot=self.on_mouse)
+        self.plot.scene().sigMouseClicked.connect(self.on_plot_click)
+
+        # overview of the whole recording; the region is the visible part of the main plot
+        self.overview = pg.PlotWidget()
+        self.overview.setFixedHeight(30)
+        ov = self.overview.getPlotItem()
+        ov.hideButtons()
+        ov.setMenuEnabled(False)
+        ov.hideAxis("bottom")
+        ov.getAxis("left").setWidth(AXIS_WIDTH)
+        ov.getAxis("left").setStyle(showValues=False, tickLength=0)
+        ov.getAxis("left").setPen(pg.mkPen(None))
+        self.ovb = ov.getViewBox()
+        self.ovb.setMouseEnabled(x=False, y=False)
+        self.ovb.disableAutoRange()
+        self.ovb.sigResized.connect(lambda *_: setattr(self, "overview_dirty", True))
+        self.ov_curve = self.overview.plot(pen=pg.mkPen(255, 140, 66, 150, width=1))
+        self.ov_region = pg.LinearRegionItem(brush=pg.mkBrush(255, 255, 255, 28),
+                                             hoverBrush=pg.mkBrush(255, 255, 255, 45),
+                                             pen=pg.mkPen("#ffffff99", width=1),
+                                             hoverPen=pg.mkPen("#ffffff", width=2))
+        self.ov_region.setZValue(10)
+        self.ov_region.setCursor(Qt.CursorShape.OpenHandCursor)
+        for line in self.ov_region.lines:
+            line.setCursor(Qt.CursorShape.SizeHorCursor)
+        self.ov_region.sigRegionChanged.connect(self.on_overview_region)
+        self.ov_region.hide()
+        self.overview.addItem(self.ov_region, ignoreBounds=True)
+        self.ov_text = pg.TextItem(color=TEXT, anchor=(0.5, 0.5), fill=pg.mkBrush(21, 23, 28, 200))
+        self.ov_text.setZValue(20)
+        self.overview.addItem(self.ov_text, ignoreBounds=True)
+        self.overview.scene().sigMouseClicked.connect(self.on_overview_click)
+        self.overview.setToolTip("Whole recording. Drag the highlighted part to pan, its edges to zoom; "
+                                 "click to jump.")
 
         # side panel
         side = QWidget()
@@ -397,7 +472,7 @@ class MainWindow(QMainWindow):
         self.sel_table.cellDoubleClicked.connect(self.on_sel_double_click)
         sl.addWidget(self.sel_table)
         btns = QHBoxLayout()
-        for text, action in (("+ Add", lambda: self.add_selection()), ("Remove", self.remove_selection),
+        for text, action in (("+ Add", lambda: self.add_selection()), ("Remove", lambda: self.remove_selection()),
                              ("Zoom", self.zoom_selection)):
             b = QPushButton(text)
             b.clicked.connect(lambda _, a=action: a())
@@ -425,7 +500,13 @@ class MainWindow(QMainWindow):
         scroll.setMaximumWidth(440)
 
         split = QSplitter()
-        split.addWidget(self.plot)
+        plot_box = QWidget()
+        pl = QVBoxLayout(plot_box)
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setSpacing(0)
+        pl.addWidget(self.overview)
+        pl.addWidget(self.plot)
+        split.addWidget(plot_box)
         split.addWidget(scroll)
         split.setStretchFactor(0, 1)
         split.setCollapsible(0, False)
@@ -569,6 +650,9 @@ class MainWindow(QMainWindow):
         if self.data_dirty:
             self.data_dirty = False
             self.process_new_data()
+        if self.overview_dirty:
+            self.overview_dirty = False
+            self.render_overview()
         if self.view_dirty:
             self.view_dirty = False
             self.render()
@@ -582,7 +666,7 @@ class MainWindow(QMainWindow):
         if not len(r):
             self.series.reset(None)
             self.update_stats()
-            self.view_dirty = True
+            self.view_dirty = self.overview_dirty = True
             return
         unit_code = int(r.unit_codes[-1])
         if unit_code != self.series.code:
@@ -601,6 +685,7 @@ class MainWindow(QMainWindow):
             lo = max(t[0], t[-1] - span) if span else t[0]
             self.vb.setXRange(lo, max(t[-1], lo + 1e-3), padding=0.02)
         self.view_dirty = True
+        self.overview_dirty = True
         self.update_stats()
 
     def invalidate_view(self, *_):
@@ -629,6 +714,52 @@ class MainWindow(QMainWindow):
             self.curve.setSymbol("o" if show_symbols else None)
         # No fill under the curve: an antialiased fill costs ~0.5 s per redraw in Qt.
         self.curve.setData(x, y, connect="finite")
+        self.sync_overview_region()
+
+    def render_overview(self):
+        n = self.series.n
+        if not n:
+            self.ov_curve.setData([], [])
+            self.ov_region.hide()
+            self.ov_text.setText("")
+            return
+        t = self.rec.t
+        x, y, _ = self.series.envelope(t, 0, n, 2 * max(int(self.ovb.width()), 200))
+        self.ov_curve.setData(x, y, connect="finite")
+        mm = self.series.minmax(0, n)
+        if mm:
+            pad = (mm[1] - mm[0]) * 0.1 or abs(mm[1]) * 0.05 or 1e-9
+            self.ovb.setYRange(mm[0] - pad, mm[1] + pad, padding=0)
+        self.ovb.setXRange(t[0], max(t[-1], t[0] + 1e-3), padding=0)
+        self.ov_region.show()
+        self.sync_overview_region()
+
+    def sync_overview_region(self):
+        (x0, x1), _ = self.vb.viewRange()
+        self._ov_sync = True
+        self.ov_region.setRegion((x0, x1))
+        self._ov_sync = False
+        (ox0, ox1), (oy0, oy1) = self.ovb.viewRange()
+        self.ov_text.setText(f"Δt {fmt_duration(x1 - x0, True)}")
+        self.ov_text.setPos(min(max((x0 + x1) / 2, ox0 + (ox1 - ox0) * 0.05), ox1 - (ox1 - ox0) * 0.05),
+                            (oy0 + oy1) / 2)
+
+    def on_overview_region(self):
+        if self._ov_sync:
+            return
+        lo, hi = self.ov_region.getRegion()
+        self.act_follow.setChecked(False)
+        self.auto_y = True
+        self.vb.setXRange(lo, hi, padding=0)
+
+    def on_overview_click(self, ev):
+        if ev.button() != Qt.MouseButton.LeftButton or not self.series.n:
+            return
+        if not self.ovb.sceneBoundingRect().contains(ev.scenePos()):
+            return
+        x = self.ovb.mapSceneToView(ev.scenePos()).x()
+        lo, hi = self.ov_region.getRegion()
+        self.ov_region.setRegion((x - (hi - lo) / 2, x + (hi - lo) / 2))
 
     def fit_y(self, i0, i1):
         mm = self.series.minmax(i0, i1) if i1 > i0 else None
@@ -636,7 +767,9 @@ class MainWindow(QMainWindow):
             return
         lo, hi = mm
         pad = (hi - lo) * 0.08 or abs(hi) * 0.05 or 1e-9
-        self.vb.setYRange(lo - pad, hi + pad, padding=0)
+        top = hi + pad
+        top += (top - (lo - pad)) * (1 - HEADER_SPAN) / HEADER_SPAN if self.selections else 0
+        self.vb.setYRange(lo - pad, top, padding=0)
 
     def on_manual_range(self, mask=None, *_):
         self.act_follow.setChecked(False)
@@ -701,8 +834,10 @@ class MainWindow(QMainWindow):
                         color or SEL_COLORS[(self.sel_counter - 1) % len(SEL_COLORS)])
         sel.region.sigRegionChanged.connect(lambda _, s=sel: self.on_region_changed(s))
         sel.region.sigRegionChangeFinished.connect(lambda *_: self.mark_unsaved())
-        self.plot.addItem(sel.region, ignoreBounds=True)
+        for item in sel.items():
+            self.plot.addItem(item, ignoreBounds=True)
         self.selections.append(sel)
+        self.view_dirty = True  # make room for the header band
 
         row = self.sel_table.rowCount()
         self.sel_table.blockSignals(True)
@@ -720,21 +855,25 @@ class MainWindow(QMainWindow):
         self.mark_unsaved()
         return sel
 
-    def remove_selection(self):
-        if self.active is None:
+    def remove_selection(self, sel=None):
+        row = self.selections.index(sel) if sel is not None else self.active
+        if row is None:
             return
-        sel = self.selections.pop(self.active)
-        self.plot.removeItem(sel.region)
+        sel = self.selections.pop(row)
+        for item in sel.items():
+            self.plot.removeItem(item)
         self.sel_table.blockSignals(True)
-        self.sel_table.removeRow(self.active)
+        self.sel_table.removeRow(row)
         self.sel_table.blockSignals(False)
         self.active = None
-        self.set_active(min(self.sel_table.rowCount() - 1, self.sel_table.currentRow()))
+        self.set_active(min(self.sel_table.rowCount() - 1, row))
+        self.view_dirty = True
         self.mark_unsaved()
 
     def clear_selections(self):
         for sel in self.selections:
-            self.plot.removeItem(sel.region)
+            for item in sel.items():
+                self.plot.removeItem(item)
         self.selections.clear()
         self.sel_table.setRowCount(0)
         self.active = None
@@ -788,6 +927,10 @@ class MainWindow(QMainWindow):
             self.vline.hide()
             self.hover.hide()
             return
+        for sel in reversed(self.selections):
+            if sel.header_hit(self.vb, pos):
+                self.show_selection_tip(sel, pos)
+                return
         x = self.vb.mapSceneToView(pos).x()
         i = int(np.clip(np.searchsorted(t, x), 1, len(t) - 1)) if len(t) > 1 else 0
         if i and abs(t[i - 1] - x) < abs(t[i] - x):
@@ -799,6 +942,37 @@ class MainWindow(QMainWindow):
         self.hover.setAnchor((1, 0) if ti > (x0 + x1) / 2 else (0, 0))
         self.hover.setPos(ti, y1)
         self.vline.show()
+        self.hover.show()
+
+    def on_plot_click(self, ev):
+        if ev.button() != Qt.MouseButton.LeftButton:
+            return
+        pos = ev.scenePos()
+        for sel in reversed(self.selections):
+            if sel.close_hit(pos):
+                self.remove_selection(sel)
+                self.hover.hide()
+                return
+            if sel.header_hit(self.vb, pos):
+                self.set_active(self.selections.index(sel))
+                return
+
+    def show_selection_tip(self, sel, pos):
+        lo, hi = sel.bounds()
+        texts = stats_texts(self.selection_stats(sel), self._unit, self.supply.value())
+        rows = [("Δt", fmt_duration(hi - lo, True))]
+        if self.rec.t0 is not None:
+            rows.append(("Clock", f"{fmt_clock(self.rec.t0 + lo)} – {fmt_clock(self.rec.t0 + hi)}"))
+        rows += [(name, texts[key]) for key, name in STATS_ROWS if key != "dur"]
+        cells = "".join(f"<tr><td style='color:{MUTED}; padding-right:14px'>{k}</td>"
+                        f"<td align='right'>{v}</td></tr>" for k, v in rows)
+        self.hover.setHtml(f"<div style='color:{TEXT}'><b style='color:{sel.color}'>{html.escape(sel.name)}</b>"
+                           f"<table cellspacing='0' cellpadding='1'>{cells}</table></div>")
+        p = self.vb.mapSceneToView(pos)
+        (x0, x1), (y0, y1) = self.vb.viewRange()
+        self.hover.setAnchor((1 if p.x() > (x0 + x1) / 2 else 0, 1 if p.y() < (y0 + y1) / 2 else 0))
+        self.hover.setPos(p.x(), p.y())
+        self.vline.hide()
         self.hover.show()
 
     # files

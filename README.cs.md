@@ -89,9 +89,13 @@ Myš: kolečko zoomuje, tažení posouvá (vypne sledování), tažení pravým 
 Po najetí na graf se zobrazí čas od začátku, systémový čas a hodnota vzorku.
 
 **Výběry:** klávesa S (nebo **+ Selection**) přidá úsek doprostřed zobrazení. Tažením okraje
-(úchyt ◆, kurzor se změní na ↔) se mění šířka, tažením vnitřku se úsek posouvá. Tabulka
-Selections ukazuje všechny úseky; kliknutím na řádek se zobrazí jeho kompletní statistiky,
+(úchyt ◆, kurzor se změní na ↔) se mění šířka, tažením vnitřku nebo barevné hlavičky se úsek posouvá.
+Po najetí na hlavičku se zobrazí Δt, časový rozsah a kompletní statistiky; ✕ v hlavičce úsek odebere.
+Tabulka Selections ukazuje všechny úseky; kliknutím na řádek se zobrazí jeho statistiky,
 dvojklikem na název ho přejmenuješ, dvojklikem na jiný sloupec (nebo **Zoom**) se na něj přiblížíš.
+
+**Přehled:** pás nad grafem ukazuje celý záznam se zvýrazněnou zobrazenou částí a její Δt.
+Tažením zvýraznění se posouvá pohled, tažením jeho okrajů se mění zoom, kliknutím jinam se přeskočí.
 
 Se zapnutým **Auto-log to CSV** se každý vzorek ihned zapisuje do `logs/ut71a_YYYYMMDD_HHMMSS.csv`.
 Zadáním napájecího napětí v postranním panelu se z naměřeného náboje dopočítá energie.
