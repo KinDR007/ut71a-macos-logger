@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (
 )
 
 import ut71a
-from ut71a_data import CSV_FIELDS, Recording, Series, load_project, save_project
+from ut71a_data import CSV_FIELDS, Recording, Series, find_active_regions, load_project, save_project
 
 APP_NAME = "UT71A Logger"
 LOG_DIR = Path(__file__).resolve().parent / "logs"
@@ -51,6 +51,7 @@ NO_SI_PREFIX = {"°C", "°F", "%"}
 QUANTITY = {"A": "Current", "V": "Voltage", "Ohm": "Resistance", "F": "Capacitance",
             "Hz": "Frequency", "°C": "Temperature", "°F": "Temperature", "W": "Power", "%": "Percent"}
 RATE_WINDOW = 10  # seconds, for the live sample rate
+DETECT_MAX_SAMPLES = 2_000_000  # skip burst detection on larger visible ranges
 SYMBOLS_MAX_VISIBLE = 400  # draw sample dots only when zoomed in this far
 POINTS_PER_PIXEL = 8  # upper bound; LOD levels step by 16x, so 0.5-8 points per pixel
 REFRESH_MS = 33
@@ -909,11 +910,27 @@ class MainWindow(QMainWindow):
 
     # selections
 
+    def detect_free_region(self):
+        """First detected burst in the visible range that has no selection yet, or None."""
+        i0, i1 = self.visible_indices(margin=0)
+        if i1 - i0 < 5 or i1 - i0 > DETECT_MAX_SAMPLES:
+            return None
+        for lo, hi in find_active_regions(self.rec.t[i0:i1], self.series.y.view[i0:i1]):
+            covered = any(min(hi, b) - max(lo, a) >= 0.5 * (hi - lo) for a, b in (s.bounds() for s in self.selections))
+            if not covered:
+                return lo, hi
+        return None
+
     def add_selection(self, lo=None, hi=None, name=None, color=None):
         if lo is None:
-            (x0, x1), _ = self.vb.viewRange()
-            w = x1 - x0
-            lo, hi = x0 + w * 0.4, x0 + w * 0.6
+            found = self.detect_free_region()
+            if found:
+                lo, hi = found
+                self.statusBar().showMessage("Selection placed on detected activity", 4000)
+            else:
+                (x0, x1), _ = self.vb.viewRange()
+                w = x1 - x0
+                lo, hi = x0 + w * 0.4, x0 + w * 0.6
         self.sel_counter += 1
         sel = Selection(name or f"Sel {self.sel_counter}", lo, hi,
                         color or SEL_COLORS[(self.sel_counter - 1) % len(SEL_COLORS)])

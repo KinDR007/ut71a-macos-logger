@@ -89,7 +89,9 @@ Myš: kolečko zoomuje časovou osu, Ctrl (nebo ⌘) + kolečko zoomuje obě osy
 sledování), tažení pravým tlačítkem zoomuje jednu osu.
 Po najetí na graf se zobrazí čas od začátku, systémový čas a hodnota vzorku.
 
-**Výběry:** klávesa S (nebo **+ Selection**) přidá úsek doprostřed zobrazení. Tažením okraje
+**Výběry:** klávesa S (nebo **+ Selection**) přidá úsek. Pokud je ve viditelné části aktivita (zřetelně
+nad klidovou úrovní), která ještě nemá výběr, nový výběr ji pokryje od začátku do konce; jinak se vloží
+doprostřed zobrazení. Tažením okraje
 (úchyt ◆, kurzor se změní na ↔) se mění šířka, tažením vnitřku nebo barevné hlavičky se úsek posouvá.
 Po najetí na hlavičku se zobrazí Δt, časový rozsah a kompletní statistiky; ✕ v hlavičce úsek odebere.
 Tabulka Selections ukazuje všechny úseky; kliknutím na řádek se zobrazí jeho statistiky,

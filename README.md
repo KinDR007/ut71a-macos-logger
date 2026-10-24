@@ -89,7 +89,9 @@ Mouse: wheel zooms the time axis, Ctrl (or ⌘) + wheel zooms both axes, drag pa
 right-drag zooms one axis.
 Hover over the plot to read the time, clock time and value of a sample.
 
-**Selections:** press S (or **+ Selection**) to add a region in the middle of the view. Drag the
+**Selections:** press S (or **+ Selection**) to add a region. If the visible range contains a burst of
+activity without a selection (clearly above the quiet baseline), the new selection covers it from start
+to end; otherwise it is placed in the middle of the view. Drag the
 edges (◆ handle, the cursor changes to ↔) to resize, drag the inside or the colored header to move.
 Hover over the header to see Δt, clock range and full statistics; ✕ in the header removes it.
 The Selections table lists all regions; click a row to show its statistics, double-click the name

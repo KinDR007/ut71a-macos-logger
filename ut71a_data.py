@@ -311,6 +311,38 @@ class Series:
         return [x, *tx], [y, *ty]
 
 
+def find_active_regions(t, y, threshold=0.2, merge_samples=3, min_samples=2):
+    """Find bursts of activity above a quiet baseline.
+
+    Returns [(start, end)] times. The level is baseline + `threshold` * (peak - baseline);
+    gaps of up to `merge_samples` samples are merged and each region is widened by one
+    sample on both sides so that rising and falling edges are included.
+    Returns [] when the signal has no clear baseline/peak contrast.
+    """
+    ok = np.isfinite(y)
+    if ok.sum() < 5:
+        return []
+    t, y = np.asarray(t)[ok], np.asarray(y, np.float64)[ok]
+    base, peak = float(np.percentile(y, 10)), float(y.max())
+    span = peak - base
+    level = base + threshold * span
+    quiet = y[y <= level]
+    noise = 1.4826 * float(np.median(np.abs(quiet - np.median(quiet)))) if len(quiet) else 0.0
+    if span <= max(0.5 * abs(base), 10 * noise) or span <= 0:
+        return []
+
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], (y > level).astype(np.int8), [0]))))
+    runs = [[s, e] for s, e in zip(edges[0::2], edges[1::2])]  # e is exclusive
+    merged = []
+    for s, e in runs:
+        if merged and s - merged[-1][1] <= merge_samples:
+            merged[-1][1] = e
+        else:
+            merged.append([s, e])
+    last = len(t) - 1
+    return [(float(t[max(s - 1, 0)]), float(t[min(e, last)])) for s, e in merged if e - s >= min_samples]
+
+
 # projects
 
 def save_project(path, rec, selections, supply_v):
