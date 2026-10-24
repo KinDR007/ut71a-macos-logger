@@ -96,7 +96,7 @@ dvojklikem na název ho přejmenuješ, dvojklikem na jiný sloupec (nebo **Zoom*
 Řádky **Project** a **View** shrnují celý záznam a zobrazený úsek; lišta ukazuje FROM / TO / Δ
 aktivního výběru.
 
-**Přehled:** pás nad grafem ukazuje celý záznam se zvýrazněnou zobrazenou částí a její Δt.
+**Přehled:** pás nad grafem ukazuje celý záznam se zvýrazněnou zobrazenou částí a její Δt
 a všemi výběry jako barevnými pásy. Tažením zvýraznění se posouvá pohled, tažením jeho okrajů se mění
 zoom, kliknutím na pás se přiblíží daný výběr, kliknutím jinam se přeskočí.
 
