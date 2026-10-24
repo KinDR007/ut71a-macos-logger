@@ -97,7 +97,8 @@ dvojklikem na název ho přejmenuješ, dvojklikem na jiný sloupec (nebo **Zoom*
 aktivního výběru.
 
 **Přehled:** pás nad grafem ukazuje celý záznam se zvýrazněnou zobrazenou částí a její Δt.
-Tažením zvýraznění se posouvá pohled, tažením jeho okrajů se mění zoom, kliknutím jinam se přeskočí.
+a všemi výběry jako barevnými pásy. Tažením zvýraznění se posouvá pohled, tažením jeho okrajů se mění
+zoom, kliknutím na pás se přiblíží daný výběr, kliknutím jinam se přeskočí.
 
 Se zapnutým **Auto-log to CSV** se každý vzorek ihned zapisuje do `logs/ut71a_YYYYMMDD_HHMMSS.csv`.
 Zadáním napájecího napětí v postranním panelu se z naměřeného náboje dopočítá energie.

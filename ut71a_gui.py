@@ -217,7 +217,12 @@ class Selection:
         self.header.setZValue(9)  # below the region, so its line labels stay on top
         for line in self.header.lines:
             line.hide()
-        self.region.sigRegionChanged.connect(lambda r: self.header.setRegion(r.getRegion()))
+        # band in the overview strip, so the selection stays visible when scrolled out of view
+        self.ov_brush = pg.mkBrush(c.red(), c.green(), c.blue(), 90)
+        self.ov_active_brush = pg.mkBrush(c.red(), c.green(), c.blue(), 170)
+        self.ov_band = pg.LinearRegionItem((lo, hi), movable=False, brush=self.ov_brush, pen=pg.mkPen(color, width=1))
+        self.ov_band.setZValue(5)
+        self.region.sigRegionChanged.connect(self.sync_bands)
         label_pos = (1 + HEADER_SPAN) / 2
         self.label = pg.InfLineLabel(self.region.lines[0], text=f" {name}", position=label_pos,
                                      anchors=[(0, 0.5), (0, 0.5)], color=HEADER_TEXT)
@@ -230,6 +235,11 @@ class Selection:
 
     def items(self):
         return self.region, self.header
+
+    def sync_bands(self):
+        rng = self.region.getRegion()
+        self.header.setRegion(rng)
+        self.ov_band.setRegion(rng)
 
     def header_hit(self, vb, scene_pos):
         p = vb.mapSceneToView(scene_pos)
@@ -245,6 +255,8 @@ class Selection:
         self.region.update()
         self.header.setBrush(self.header_active_brush if on else self.header_brush)
         self.header.update()
+        self.ov_band.setBrush(self.ov_active_brush if on else self.ov_brush)
+        self.ov_band.update()
 
     def rename(self, name):
         self.name = name
@@ -769,6 +781,13 @@ class MainWindow(QMainWindow):
         if not self.ovb.sceneBoundingRect().contains(ev.scenePos()):
             return
         x = self.ovb.mapSceneToView(ev.scenePos()).x()
+        tol = 3 * self.ovb.viewPixelSize()[0]  # narrow selections are hard to hit
+        for row, sel in reversed(list(enumerate(self.selections))):
+            lo, hi = sel.bounds()
+            if lo - tol <= x <= hi + tol:
+                self.set_active(row)
+                self.zoom_selection()
+                return
         lo, hi = self.ov_region.getRegion()
         self.ov_region.setRegion((x - (hi - lo) / 2, x + (hi - lo) / 2))
 
@@ -893,6 +912,7 @@ class MainWindow(QMainWindow):
         sel.region.sigRegionChangeFinished.connect(lambda *_: self.mark_unsaved())
         for item in sel.items():
             self.plot.addItem(item, ignoreBounds=True)
+        self.overview.addItem(sel.ov_band, ignoreBounds=True)
         self.selections.append(sel)
         self.view_dirty = True  # make room for the header band
 
@@ -919,6 +939,7 @@ class MainWindow(QMainWindow):
         sel = self.selections.pop(row)
         for item in sel.items():
             self.plot.removeItem(item)
+        self.overview.removeItem(sel.ov_band)
         self.sel_table.blockSignals(True)
         self.sel_table.removeRow(row)
         self.sel_table.blockSignals(False)
@@ -931,6 +952,7 @@ class MainWindow(QMainWindow):
         for sel in self.selections:
             for item in sel.items():
                 self.plot.removeItem(item)
+            self.overview.removeItem(sel.ov_band)
         self.selections.clear()
         self.sel_table.setRowCount(0)
         self.add_fixed_rows()

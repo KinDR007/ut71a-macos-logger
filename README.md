@@ -97,7 +97,8 @@ rows summarize the whole recording and the visible range; the toolbar shows FROM
 active selection.
 
 **Overview:** the strip above the plot shows the whole recording with the visible part highlighted
-and its Δt. Drag the highlight to pan, drag its edges to zoom, click elsewhere to jump.
+and its Δt, plus all selections as colored bands. Drag the highlight to pan, drag its edges to zoom,
+click a band to zoom to that selection, click elsewhere to jump.
 
 With **Auto-log to CSV** enabled, each sample is written to `logs/ut71a_YYYYMMDD_HHMMSS.csv` as it arrives.
 Enter the supply voltage in the side panel to get energy from the measured charge.
