@@ -1,0 +1,7 @@
+hidapi==0.15.0
+numpy==2.5.4
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.2
+PyQt6_sip==13.13.0
+pyqtgraph==0.14.0
+colorama==0.4.6
